@@ -1,2 +1,3 @@
 # sync_local_to_pod_optimized.py 依赖
 watchdog>=3.0.0
+loguru>=0.7.0

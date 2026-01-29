@@ -21,10 +21,38 @@ import shutil
 import hashlib
 import time
 import subprocess
+import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from concurrent.futures import ThreadPoolExecutor
+from loguru import logger
+
+# ========== 日志配置 ==========
+
+def configure_logger(debug=False):
+    """配置 loguru 日志"""
+    # 移除默认的 handler
+    logger.remove()
+    
+    # 添加控制台输出
+    if debug:
+        # Debug 模式：显示详细信息（包含DEBUG级别日志）
+        logger.add(
+            sys.stderr,
+            format="<green>{time:HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+            level="DEBUG"
+        )
+    else:
+        # 普通模式：显示时间、级别和消息（INFO及以上）
+        logger.add(
+            sys.stderr,
+            format="<green>{time:HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+            level="INFO"
+        )
+    
+    # 添加文件日志（可选）
+    # logger.add("sync2pod_{time}.log", rotation="10 MB", retention="7 days", level="DEBUG")
 
 # ========== 配置管理 ==========
 
@@ -81,20 +109,22 @@ def select_running_pod_by_label(cluster, namespace, pod_label):
         frame = inspect.currentframe().f_back
         debug = frame.f_locals.get('debug', False)
     if debug:
-        print(f'[DEBUG] 查询 running pod 命令: {cmd_str}')
+        logger.debug(f'查询 running pod 命令: {cmd_str}')
     try:
         pod_name = subprocess.check_output(cmd, text=True).strip()
         # 去除首尾单引号和空白
         pod_name = pod_name.strip("'\"").strip()
         if not pod_name:
-            print('[ERROR] 未找到 running 状态的 pod', file=sys.stderr)
+            logger.error('未找到 running 状态的 pod')
             sys.exit(1)
         return pod_name
     except Exception as e:
-        print(f'[ERROR] kubectl 查询 pod 失败: {cmd_str}\n{e}', file=sys.stderr)
+        logger.error(f'kubectl 查询 pod 失败: {cmd_str}\n{e}')
         sys.exit(1)
 
 # ========== 工具函数 ==========
+
+
 
 def calculate_file_md5(file_path):
     """计算文件的 MD5 哈希值"""
@@ -105,7 +135,7 @@ def calculate_file_md5(file_path):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
     except Exception as e:
-        print(f"计算 MD5 失败 {file_path}: {e}")
+        logger.error(f"计算 MD5 失败 {file_path}: {e}")
         return None
 
 def format_file_size(size_bytes):
@@ -150,49 +180,82 @@ def count_files(local_path, exclude_paths=None):
     
     return cnt
 
-def compress_dir(src_dir, out_file, exclude_paths=None):
+def compress_dir(src_dir, out_file, exclude_paths=None, debug=False):
     """压缩目录为 tar.gz 文件（排除隐藏文件和 exclude_paths 中的目录）"""
     if exclude_paths is None:
         exclude_paths = []
     
+    # 第一步：收集所有待压缩的文件信息
+    files_to_compress = []  # 存储 (file_path, rel_path, file_size)
+    
+    logger.info("🔍 扫描待压缩文件...")
+    for root, dirs, files in os.walk(src_dir):
+        # 排除隐藏目录
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        
+        # 排除 exclude_paths 中的目录（直接修改 dirs 列表，避免遍历这些目录）
+        dirs_to_remove = []
+        for d in dirs:
+            dir_path = os.path.join(root, d)
+            rel_dir_path = os.path.relpath(dir_path, src_dir)
+            
+            for exclude_path in exclude_paths:
+                # 检查目录是否匹配排除模式
+                if rel_dir_path == exclude_path or rel_dir_path.startswith(exclude_path + os.sep) or rel_dir_path.startswith(exclude_path + '/'):
+                    dirs_to_remove.append(d)
+                    if debug:
+                        logger.debug(f'排除目录: {rel_dir_path}')
+                    break
+        
+        # 从 dirs 列表中移除需要排除的目录，os.walk 将不会遍历这些目录
+        for d in dirs_to_remove:
+            dirs.remove(d)
+        
+        for file in files:
+            # 跳过隐藏文件
+            if file.startswith('.'):
+                continue
+            
+            file_path = os.path.join(root, file)
+            rel_path = os.path.relpath(file_path, src_dir)
+            
+            # 检查文件是否应排除
+            should_exclude = False
+            for exclude_path in exclude_paths:
+                if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
+                    should_exclude = True
+                    if debug:
+                        logger.debug(f'排除文件: {rel_path}')
+                    break
+            
+            if not should_exclude:
+                try:
+                    file_size = os.path.getsize(file_path)
+                    files_to_compress.append((file_path, rel_path, file_size))
+                except Exception as e:
+                    if debug:
+                        logger.debug(f'获取文件大小失败 {rel_path}: {e}')
+    
+    # 第二步：显示最大的10个文件
+    if files_to_compress:
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 体积最大的 10 个文件:")
+        logger.info("=" * 60)
+        sorted_files = sorted(files_to_compress, key=lambda x: x[2], reverse=True)[:10]
+        for idx, (_, rel_path, size) in enumerate(sorted_files, 1):
+            size_str = format_file_size(size)
+            logger.info(f"  {idx:2d}. {size_str:>10s}  {rel_path}")
+        logger.info("=" * 60 + "\n")
+    
+    # 第三步：压缩文件
+    logger.info("📦 开始压缩文件...")
+    added_count = 0
     with tarfile.open(out_file, 'w:gz') as tar:
-        for root, dirs, files in os.walk(src_dir):
-            # 排除隐藏目录
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            
-            # 排除 exclude_paths 中的目录（直接修改 dirs 列表，避免遍历这些目录）
-            dirs_to_remove = []
-            for d in dirs:
-                dir_path = os.path.join(root, d)
-                rel_dir_path = os.path.relpath(dir_path, src_dir)
-                
-                for exclude_path in exclude_paths:
-                    # 检查目录是否匹配排除模式
-                    if rel_dir_path == exclude_path or rel_dir_path.startswith(exclude_path + os.sep) or rel_dir_path.startswith(exclude_path + '/'):
-                        dirs_to_remove.append(d)
-                        break
-            
-            # 从 dirs 列表中移除需要排除的目录，os.walk 将不会遍历这些目录
-            for d in dirs_to_remove:
-                dirs.remove(d)
-            
-            for file in files:
-                # 跳过隐藏文件
-                if file.startswith('.'):
-                    continue
-                
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, src_dir)
-                
-                # 检查文件是否应排除
-                should_exclude = False
-                for exclude_path in exclude_paths:
-                    if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                        should_exclude = True
-                        break
-                
-                if not should_exclude:
-                    tar.add(file_path, arcname=rel_path)
+        for file_path, rel_path, _ in files_to_compress:
+            tar.add(file_path, arcname=rel_path)
+            added_count += 1
+    
+    logger.success(f'✅ 压缩完成: 已打包 {added_count} 个文件')
 
 def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False, exclude_paths=None):
     """获取 Pod 中所有文件的 MD5 值（排除 exclude_paths）"""
@@ -204,7 +267,7 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
         # 获取远程目录中的所有文件
         command = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- find {remote_path} -type f -exec md5sum {{}} \\; 2>/dev/null || echo ""'
         if debug:
-            print(f'[DEBUG] 执行命令: {command}')
+            logger.debug(f'执行命令: {command}')
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
         
         if result.returncode == 0 and result.stdout.strip():
@@ -224,15 +287,15 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
                                 if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
                                     should_exclude = True
                                     if debug:
-                                        print(f'[DEBUG] 排除远程文件: {rel_path} (匹配排除模式: {exclude_path})')
+                                        logger.debug(f'排除远程文件: {rel_path} (匹配排除模式: {exclude_path})')
                                     break
                             
                             if not should_exclude:
                                 remote_files[rel_path] = md5_value
                                 if debug:
-                                    print(f'[DEBUG] 远程文件: {rel_path} -> {md5_value}')
+                                    logger.debug(f'远程文件: {rel_path} -> {md5_value}')
     except Exception as e:
-        print(f"获取远程文件 MD5 失败: {e}")
+        logger.error(f"获取远程文件 MD5 失败: {e}")
     
     return remote_files
 
@@ -244,20 +307,22 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
         exclude_paths = []
     
     # 确保远程目录存在
-    print("🔎 检查远程目录并收集远程清单...")
+    logger.info("🔎 检查远程目录并收集远程清单...")
     ensure_dir_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- mkdir -p {remote_path}'
     if debug:
-        print(f'[DEBUG] 执行命令: {ensure_dir_cmd}')
+        logger.debug(f'执行命令: {ensure_dir_cmd}')
     try:
-        subprocess.run(ensure_dir_cmd, shell=True, check=True)
+        result = subprocess.run(ensure_dir_cmd, shell=True, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"❌ 确保远程目录失败: {e}")
+        if e.stderr and e.stderr.strip():
+            logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
+        logger.error(f"❌ 确保远程目录失败: 错误码 {e.returncode}")
         return
     
     # 获取远程文件 MD5
-    print("获取远程文件 MD5 值...")
+    logger.info("获取远程文件 MD5 值...")
     remote_files_md5 = get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug, exclude_paths)
-    print(f"远程文件数量: {len(remote_files_md5)}")
+    logger.info(f"远程文件数量: {len(remote_files_md5)}")
     
     # 收集需要上传的文件和需要创建的目录
     directories_to_create = set()
@@ -282,7 +347,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                 if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
                     should_exclude = True
                     if debug:
-                        print(f'[DEBUG] 排除文件: {rel_path} (匹配排除模式: {exclude_path})')
+                        logger.debug(f'排除文件: {rel_path} (匹配排除模式: {exclude_path})')
                     break
             
             if should_exclude:
@@ -305,69 +370,71 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                 files_to_upload.append((file_path, rel_path))
     
     local_total_files = files_skipped + len(files_to_upload)
-    print(f"📊 清单汇总 -> 远程: {len(remote_files_md5)} | 本地: {local_total_files} | 待上传: {len(files_to_upload)}")
+    logger.info(f"📊 清单汇总 -> 远程: {len(remote_files_md5)} | 本地: {local_total_files} | 待上传: {len(files_to_upload)}")
     
     # 智能快速路径：如果待上传文件数超过100，自动切换到压缩打包上传
     if len(files_to_upload) > 100:
-        print("🗜️  待上传文件数超过阈值 (100)，使用压缩打包快速路径...")
+        logger.info("🗜️  待上传文件数超过阈值 (100)，使用压缩打包快速路径...")
         try:
             # 创建压缩包
-            print("📦 正在创建压缩包...")
+            logger.info("📦 正在创建压缩包...")
             compress_start = time.time()
             with tempfile.TemporaryDirectory() as tmpdir:
                 tar_path = os.path.join(tmpdir, 'sync_upload.tar.gz')
-                compress_dir(local_path, tar_path, exclude_paths)
+                compress_dir(local_path, tar_path, exclude_paths, debug)
                 compress_end = time.time()
                 compress_time = compress_end - compress_start
                 
                 compressed_size = os.path.getsize(tar_path)
-                print(f"✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)")
+                logger.success(f"✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)")
                 
                 # 上传到临时位置
                 remote_tmp_tar = "/tmp/sync_archive.tar.gz"
                 upload_cmd = f'tess kubectl --cluster {cluster} -n {namespace} cp {tar_path} {pod_name}:{remote_tmp_tar}'
                 if debug:
-                    print(f'[DEBUG] 执行命令: {upload_cmd}')
-                print("📤 上传压缩包到 Pod /tmp...")
+                    logger.debug(f'执行命令: {upload_cmd}')
+                logger.info("📤 上传压缩包到 Pod /tmp...")
                 upload_start = time.time()
-                subprocess.run(upload_cmd, shell=True, check=True)
+                result = subprocess.run(upload_cmd, shell=True, capture_output=True, text=True, check=True)
                 upload_end = time.time()
                 upload_time = upload_end - upload_start
-                print(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
+                logger.success(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
                 
                 # 解压到目标目录（覆盖模式）
                 extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && tar -xzf {remote_tmp_tar} -C {remote_path} && rm -f {remote_tmp_tar}"'
                 if debug:
-                    print(f'[DEBUG] 执行命令: {extract_cmd}')
-                print("📦 解压到远程路径（覆盖模式）...")
+                    logger.debug(f'执行命令: {extract_cmd}')
+                logger.info("📦 解压到远程路径（覆盖模式）...")
                 extract_start = time.time()
-                subprocess.run(extract_cmd, shell=True, check=True)
+                result = subprocess.run(extract_cmd, shell=True, capture_output=True, text=True, check=True)
                 extract_end = time.time()
                 extract_time = extract_end - extract_start
-                print(f"✅ 解压完成 (耗时: {extract_time:.2f}s)")
+                logger.success(f"✅ 解压完成 (耗时: {extract_time:.2f}s)")
                 
             end_time = time.time()
             total_time = end_time - start_time
             
-            print("\n" + "=" * 60)
-            print("⏱️  快速压缩同步耗时统计")
-            print("=" * 60)
-            print(f"  1. 压缩文件:   {compress_time:.2f}s")
-            print(f"  2. 上传文件:   {upload_time:.2f}s")
-            print(f"  3. 远端解压:   {extract_time:.2f}s")
-            print(f"  总耗时:        {total_time:.2f}s")
-            print("=" * 60)
-            print("🎉 初始同步完成！开始文件变更监听...")
-            print("=" * 60)
+            logger.info("\n" + "=" * 60)
+            logger.info("⏱️  快速压缩同步耗时统计")
+            logger.info("=" * 60)
+            logger.info(f"  1. 压缩文件:   {compress_time:.2f}s")
+            logger.info(f"  2. 上传文件:   {upload_time:.2f}s")
+            logger.info(f"  3. 远端解压:   {extract_time:.2f}s")
+            logger.info(f"  总耗时:        {total_time:.2f}s")
+            logger.info("=" * 60)
+            logger.success("🎉 初始同步完成！开始文件变更监听...")
+            logger.info("=" * 60)
             return
         except subprocess.CalledProcessError as e:
-            print(f"❌ 压缩快速路径失败: {e}，回退到增量上传")
+            if e.stderr and e.stderr.strip():
+                logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
+            logger.error(f"❌ 压缩快速路径失败 (错误码: {e.returncode})，回退到增量上传")
         except Exception as e:
-            print(f"❌ 创建或上传压缩包失败: {e}，回退到增量上传")
+            logger.error(f"❌ 创建或上传压缩包失败: {e}，回退到增量上传")
     
-    print("=" * 60)
-    print("开始增量上传...")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("开始增量上传...")
+    logger.info("=" * 60)
     
     # 批量创建目录
     if directories_to_create:
@@ -385,20 +452,22 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                 filtered_dirs.append(dir_path)
         
         if filtered_dirs:
-            print(f"\n📁 创建远程目录: {len(filtered_dirs)} 个目录")
+            logger.info(f"\n📁 创建远程目录: {len(filtered_dirs)} 个目录")
             all_dirs = ' '.join(filtered_dirs)
             mkdir_command = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- mkdir -p {all_dirs}'
             if debug:
-                print(f'[DEBUG] 执行命令: {mkdir_command}')
+                logger.debug(f'执行命令: {mkdir_command}')
             try:
-                subprocess.run(mkdir_command, shell=True, check=True)
-                print(f"✅ 目录创建成功: {len(filtered_dirs)} 个目录")
+                result = subprocess.run(mkdir_command, shell=True, capture_output=True, text=True, check=True)
+                logger.success(f"✅ 目录创建成功: {len(filtered_dirs)} 个目录")
             except subprocess.CalledProcessError as e:
-                print(f"❌ 目录创建失败: {e}")
+                if e.stderr and e.stderr.strip():
+                    logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
+                logger.error(f"❌ 目录创建失败: 错误码 {e.returncode}")
     
     # 并发上传文件
     if files_to_upload:
-        print(f"\n开始并发文件上传... (最大并发数: {max_workers})")
+        logger.info(f"\n开始并发文件上传... (最大并发数: {max_workers})")
         
         completed_files = 0
         total_files = len(files_to_upload)
@@ -408,7 +477,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             file_path, rel_path = file_info
             file_size = os.path.getsize(file_path)
             size_str = format_file_size(file_size)
-            print(f"📤 上传文件: {rel_path} ({size_str})")
+            logger.info(f"📤 上传文件: {rel_path} ({size_str})")
             command = f'tess kubectl --cluster {cluster} -n {namespace} cp {file_path} {pod_name}:{os.path.join(remote_path, rel_path)}'
             
             # 重试机制
@@ -417,31 +486,35 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             for attempt in range(max_retries):
                 try:
                     if debug:
-                        print(f'[DEBUG] 执行命令: {command}')
-                    subprocess.run(command, shell=True, check=True)
+                        logger.debug(f'执行命令: {command}')
+                    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
                     end_time = time.time()
                     sync_time = end_time - start_time
                     completed_files += 1
                     progress = (completed_files / total_files) * 100
                     if attempt > 0:
-                        print(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [{progress:.1f}%]")
+                        logger.success(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [{progress:.1f}%]")
                     else:
-                        print(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
+                        logger.success(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
                     return True
                 except subprocess.CalledProcessError as e:
+                    # 记录错误输出
+                    if e.stderr and e.stderr.strip():
+                        logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
+                    
                     if attempt < max_retries - 1:
-                        print(f"🔄 重试文件上传: {rel_path} (第 {attempt + 1} 次尝试)")
+                        logger.warning(f"🔄 重试文件上传: {rel_path} (第 {attempt + 1} 次尝试)")
                     else:
                         end_time = time.time()
                         sync_time = end_time - start_time
                         completed_files += 1
                         progress = (completed_files / total_files) * 100
-                        print(f"❌ 文件上传失败: {rel_path} - 错误: {e} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
+                        logger.error(f"❌ 文件上传失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
                         return False
         
         # 使用线程池并发上传
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            print(f"📊 开始并发上传，最大并发数: {max_workers}")
+            logger.info(f"📊 开始并发上传，最大并发数: {max_workers}")
             
             future_to_file = {executor.submit(upload_single_file, file_info): file_info for file_info in files_to_upload}
             
@@ -456,26 +529,26 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                         failed_uploads += 1
                 except Exception as e:
                     file_path = future_to_file[future][0]
-                    print(f"❌ 文件上传异常: {file_path} - 错误: {e}")
+                    logger.error(f"❌ 文件上传异常: {file_path} - 错误: {e}")
                     failed_uploads += 1
             
-            print(f"\n📊 上传完成统计: ✅ {successful_uploads} 成功, ❌ {failed_uploads} 失败")
+            logger.info(f"\n📊 上传完成统计: ✅ {successful_uploads} 成功, ❌ {failed_uploads} 失败")
     else:
-        print(f"\n无文件需要上传")
+        logger.info(f"\n无文件需要上传")
     
     end_time = time.time()
     total_time = end_time - start_time
-    print(f"\n⏱️  初始同步完成，总耗时: {total_time:.2f} 秒")
-    print("=" * 60)
-    print("🎉 初始同步完成！开始文件变更监听...")
-    print("=" * 60)
+    logger.info(f"\n⏱️  初始同步完成，总耗时: {total_time:.2f} 秒")
+    logger.info("=" * 60)
+    logger.success("🎉 初始同步完成！开始文件变更监听...")
+    logger.info("=" * 60)
 
 # ========== 文件监听处理器 ==========
 
 class FileChangeHandler(FileSystemEventHandler):
     """处理文件变更事件的监听器"""
     
-    def __init__(self, local_path, namespace, pod_name, remote_path, cluster, executor, debug=False, show_concurrency=False, exclude_paths=None):
+    def __init__(self, local_path, namespace, pod_name, remote_path, cluster, executor, debug=False, show_concurrency=False, exclude_paths=None, debounce_seconds=1.0):
         self.local_path = local_path
         self.namespace = namespace
         self.pod_name = pod_name
@@ -486,6 +559,10 @@ class FileChangeHandler(FileSystemEventHandler):
         self.show_concurrency = show_concurrency
         self.exclude_paths = exclude_paths if exclude_paths is not None else []
         self.processing_files = {}  # 跟踪正在处理的文件
+        self.debounce_timers = {}  # 跟踪每个文件的防抖定时器
+        self.debounce_seconds = debounce_seconds  # 防抖延迟时间（秒）
+        self.file_locks = {}  # 为每个文件创建锁，避免并发问题
+        self.pending_uploads = {}  # 跟踪等待上传的文件（当文件正在上传时，标记需要再次上传）
     
     def get_active_tasks_count(self):
         """获取当前活跃任务数"""
@@ -537,16 +614,16 @@ class FileChangeHandler(FileSystemEventHandler):
         if self.show_concurrency:
             completed = concurrency_info['completed']
             total_processing = concurrency_info['total_processing']
-            print(f"{icon} 并发状态: {active}/{max_workers} (可用: {available}, 使用率: {usage_percent:.1f}%, 总处理: {total_processing}, 已完成: {completed})")
+            logger.info(f"{icon} 并发状态: {active}/{max_workers} (可用: {available}, 使用率: {usage_percent:.1f}%, 总处理: {total_processing}, 已完成: {completed})")
             
             if active > 0:
                 active_files = self.get_active_files()
                 if active_files:
-                    print(f"   正在处理: {', '.join(active_files[:3])}{'...' if len(active_files) > 3 else ''}")
+                    logger.info(f"   正在处理: {', '.join(active_files[:3])}{'...' if len(active_files) > 3 else ''}")
         else:
             completed = concurrency_info['completed']
             total_processing = concurrency_info['total_processing']
-            print(f"{icon} 并发: {active}/{max_workers} (总处理: {total_processing}, 已完成: {completed})")
+            logger.info(f"{icon} 并发: {active}/{max_workers} (总处理: {total_processing}, 已完成: {completed})")
     
     def on_modified(self, event):
         """文件修改事件"""
@@ -557,12 +634,33 @@ class FileChangeHandler(FileSystemEventHandler):
         if any(part.startswith('.') for part in event.src_path.split(os.sep)):
             return
         
+        # 排除临时文件和备份文件
+        file_name = os.path.basename(event.src_path)
+        # 常见的临时文件后缀和模式
+        temp_patterns = [
+            file_name.endswith('~'),           # vim/emacs 备份文件
+            file_name.endswith('.swp'),        # vim 交换文件
+            file_name.endswith('.swo'),        # vim 交换文件
+            file_name.endswith('.swn'),        # vim 交换文件
+            file_name.endswith('.tmp'),        # 临时文件
+            file_name.endswith('.bak'),        # 备份文件
+            file_name.startswith('.#'),        # emacs 锁文件
+            file_name.endswith('#'),           # emacs 自动保存文件
+            file_name.startswith('~'),         # 临时文件
+            '.tmp.' in file_name,              # 临时文件
+            file_name.endswith('.temp'),       # 临时文件
+        ]
+        if any(temp_patterns):
+            if self.debug:
+                logger.debug(f'忽略临时文件: {file_name}')
+            return
+        
         # 检查是否应排除
         rel_path = os.path.relpath(event.src_path, self.local_path)
         for exclude_path in self.exclude_paths:
             if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
                 if self.debug:
-                    print(f'[DEBUG] 忽略修改文件: {rel_path} (匹配排除模式: {exclude_path})')
+                    logger.debug(f'忽略修改文件: {rel_path} (匹配排除模式: {exclude_path})')
                 return
         
         self.upload_file(event.src_path)
@@ -576,44 +674,92 @@ class FileChangeHandler(FileSystemEventHandler):
         if any(part.startswith('.') for part in event.src_path.split(os.sep)):
             return
         
+        # 排除临时文件和备份文件
+        file_name = os.path.basename(event.src_path)
+        # 常见的临时文件后缀和模式
+        temp_patterns = [
+            file_name.endswith('~'),           # vim/emacs 备份文件
+            file_name.endswith('.swp'),        # vim 交换文件
+            file_name.endswith('.swo'),        # vim 交换文件
+            file_name.endswith('.swn'),        # vim 交换文件
+            file_name.endswith('.tmp'),        # 临时文件
+            file_name.endswith('.bak'),        # 备份文件
+            file_name.startswith('.#'),        # emacs 锁文件
+            file_name.endswith('#'),           # emacs 自动保存文件
+            file_name.startswith('~'),         # 临时文件
+            '.tmp.' in file_name,              # 临时文件
+            file_name.endswith('.temp'),       # 临时文件
+        ]
+        if any(temp_patterns):
+            if self.debug:
+                logger.debug(f'忽略临时文件: {file_name}')
+            return
+        
         # 检查是否应排除
         rel_path = os.path.relpath(event.src_path, self.local_path)
         for exclude_path in self.exclude_paths:
             if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
                 if self.debug:
-                    print(f'[DEBUG] 忽略创建文件: {rel_path} (匹配排除模式: {exclude_path})')
+                    logger.debug(f'忽略创建文件: {rel_path} (匹配排除模式: {exclude_path})')
                 return
         
         self.upload_file(event.src_path)
     
     def upload_file(self, file_path):
-        """上传文件到 Pod"""
+        """上传文件到 Pod（带防抖动）"""
         rel_path = os.path.relpath(file_path, self.local_path)
         
-        # 检查文件是否正在处理
+        # 如果该文件已有防抖定时器在运行，取消它
+        if file_path in self.debounce_timers:
+            old_timer = self.debounce_timers[file_path]
+            if old_timer.is_alive():
+                if self.debug:
+                    logger.debug(f"取消旧的防抖定时器: {rel_path}")
+                old_timer.cancel()
+            del self.debounce_timers[file_path]
+        
+        # 如果该文件正在上传，不要取消它，而是设置待上传标记
         if file_path in self.processing_files:
             old_future = self.processing_files[file_path]
             if not old_future.done():
-                print(f"🔄 取消旧任务，开始新同步: {rel_path}")
-                old_future.cancel()
-            else:
-                print(f"🔍 检测到文件变更: {rel_path}")
-        else:
-            print(f"🔍 检测到文件变更: {rel_path}")
+                # 设置待上传标记，让上传完成后重新触发
+                self.pending_uploads[file_path] = True
+                if self.debug:
+                    logger.debug(f"文件正在上传中，设置待上传标记: {rel_path}")
+                # 不创建新的防抖定时器，让当前上传完成后自动处理
+                return
         
-        # 提交新任务
+        logger.info(f"🔍 检测到文件变更: {rel_path} (将在 {self.debounce_seconds}s 后上传)")
+        
+        # 创建新的防抖定时器
+        timer = threading.Timer(self.debounce_seconds, self._debounced_upload, args=[file_path])
+        self.debounce_timers[file_path] = timer
+        timer.start()
+    
+    def _debounced_upload(self, file_path):
+        """防抖后实际执行上传"""
+        rel_path = os.path.relpath(file_path, self.local_path)
+        
+        # 从防抖定时器字典中移除
+        if file_path in self.debounce_timers:
+            del self.debounce_timers[file_path]
+        
+        # 检查文件是否已经在上传中
+        if file_path in self.processing_files:
+            old_future = self.processing_files[file_path]
+            if not old_future.done():
+                # 文件正在上传中，标记需要在当前上传完成后再次上传
+                self.pending_uploads[file_path] = True
+                if self.debug:
+                    logger.debug(f"文件正在上传中，标记为待上传: {rel_path}")
+                return
+        
+        if self.debug:
+            logger.debug(f"防抖完成，开始上传: {rel_path}")
+        
+        # 提交上传任务
         future = self.executor.submit(self._upload_file, file_path)
         self.processing_files[file_path] = future
-        
-        # 显示当前并发
-        if self.show_concurrency:
-            self.print_concurrency_status()
-        else:
-            active = self.get_active_tasks_count()
-            max_workers = self.executor._max_workers
-            total_processing = len(self.processing_files)
-            completed = total_processing - active
-            print(f"📊 并发: {active}/{max_workers} (总处理: {total_processing}, 已完成: {completed})")
     
     def _upload_file(self, file_path):
         """实际上传文件的内部方法"""
@@ -627,8 +773,10 @@ class FileChangeHandler(FileSystemEventHandler):
             remote_dir = os.path.dirname(os.path.join(self.remote_path, rel_path))
             mkdir_command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} exec {self.pod_name} -- mkdir -p {remote_dir}'
             if self.debug:
-                print(f'[DEBUG] 执行命令: {mkdir_command}')
-            subprocess.run(mkdir_command, shell=True, check=True)
+                logger.debug(f'执行命令: {mkdir_command}')
+            result = subprocess.run(mkdir_command, shell=True, capture_output=True, text=True)
+            if result.returncode != 0 and result.stderr:
+                logger.error(f"❌ 创建远程目录失败: {result.stderr.strip()}")
             
             # 上传文件
             command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} cp {file_path} {self.pod_name}:{os.path.join(self.remote_path, rel_path)}'
@@ -638,36 +786,43 @@ class FileChangeHandler(FileSystemEventHandler):
             for attempt in range(max_retries):
                 try:
                     if self.debug:
-                        print(f'[DEBUG] 执行命令: {command}')
-                    subprocess.run(command, shell=True, check=True)
+                        logger.debug(f'执行命令: {command}')
+                    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
                     end_time = time.time()
                     sync_time = end_time - start_time
                     if attempt > 0:
-                        print(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [实时同步]")
+                        logger.success(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [实时同步]")
                     else:
-                        print(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) [实时同步]")
+                        logger.success(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) [实时同步]")
                     return
                 except subprocess.CalledProcessError as e:
+                    # 记录错误输出
+                    if e.stderr and e.stderr.strip():
+                        logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
+                    
                     if attempt < max_retries - 1:
-                        print(f"🔄 重试文件同步: {rel_path} (第 {attempt + 1} 次尝试)")
+                        logger.warning(f"🔄 重试文件同步: {rel_path} (第 {attempt + 1} 次尝试)")
                     else:
                         end_time = time.time()
                         sync_time = end_time - start_time
-                        print(f"❌ 文件同步失败: {rel_path} - 错误: {e} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s)")
+                        logger.error(f"❌ 文件同步失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s)")
         finally:
             # 无论成功还是失败，都从处理列表中移除
             if file_path in self.processing_files:
                 del self.processing_files[file_path]
             
-            # 显示当前并发
-            if self.show_concurrency:
-                self.print_concurrency_status()
-            else:
-                active = self.get_active_tasks_count()
-                max_workers = self.executor._max_workers
-                total_processing = len(self.processing_files)
-                completed = total_processing - active
-                print(f"📊 并发: {active}/{max_workers} (总处理: {total_processing}, 已完成: {completed})")
+            # 检查是否有待上传的标记
+            if file_path in self.pending_uploads:
+                del self.pending_uploads[file_path]
+                rel_path = os.path.relpath(file_path, self.local_path)
+                if self.debug:
+                    logger.debug(f"检测到待上传标记，重新启动防抖: {rel_path}")
+                # 不立即上传，而是重新触发防抖，避免文件还在编辑中
+                # 这样可以合并上传期间的多次修改
+                timer = threading.Timer(self.debounce_seconds, self._debounced_upload, args=[file_path])
+                self.debounce_timers[file_path] = timer
+                timer.start()
+                logger.info(f"🔄 检测到新变更，将在 {self.debounce_seconds}s 后重新上传: {rel_path}")
 
 # ========== 初始化配置 ==========
 
@@ -682,26 +837,26 @@ def init_config(project_name, local_path):
         if 'local_path' not in config or not config.get('local_path'):
             config['local_path'] = local_path
             save_config(project_name, config)
-            print("=" * 60)
-            print("✅ 配置文件已更新（添加 local_path）")
-            print("=" * 60)
-            print(f"📁 配置文件位置: {config_path}")
-            print(f"📝 local_path: {local_path}")
-            print("=" * 60)
-            print("\n✨ 使用以下命令开始同步：")
-            print(f"   python3 {sys.argv[0]} --project {project_name}")
-            print("=" * 60)
+            logger.info("=" * 60)
+            logger.success("✅ 配置文件已更新（添加 local_path）")
+            logger.info("=" * 60)
+            logger.info(f"📁 配置文件位置: {config_path}")
+            logger.info(f"📝 local_path: {local_path}")
+            logger.info("=" * 60)
+            logger.info("\n✨ 使用以下命令开始同步：")
+            logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+            logger.info("=" * 60)
         else:
-            print("=" * 60)
-            print("⚠️  配置文件已存在")
-            print("=" * 60)
-            print(f"📁 配置文件位置: {config_path}")
-            print("=" * 60)
-            print("\n📝 请直接编辑配置文件：")
-            print(f"   vim {config_path}")
-            print("\n✨ 编辑完成后，使用以下命令开始同步：")
-            print(f"   python3 {sys.argv[0]} --project {project_name}")
-            print("=" * 60)
+            logger.info("=" * 60)
+            logger.info("⚠️  配置文件已存在")
+            logger.info("=" * 60)
+            logger.info(f"📁 配置文件位置: {config_path}")
+            logger.info("=" * 60)
+            logger.info("\n📝 请直接编辑配置文件：")
+            logger.info(f"   vim {config_path}")
+            logger.info("\n✨ 编辑完成后，使用以下命令开始同步：")
+            logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+            logger.info("=" * 60)
         return
     
     # 创建示例配置
@@ -717,6 +872,7 @@ def init_config(project_name, local_path):
         "show_concurrency": False,
         "no_watch": False,
         "skip_verify": False,
+        "debounce_seconds": 1.0,
         "exclude_paths": [
             "示例: node_modules",
             "示例: *.log",
@@ -727,20 +883,20 @@ def init_config(project_name, local_path):
     # 保存配置
     save_config(project_name, example_config)
     
-    print("=" * 60)
-    print("✅ 配置文件已创建")
-    print("=" * 60)
-    print(f"📁 配置文件位置: {config_path}")
-    print("=" * 60)
-    print("📋 当前配置内容（示例）:")
-    print("=" * 60)
-    print(json.dumps(example_config, indent=4, ensure_ascii=False))
-    print("=" * 60)
-    print("\n📝 请编辑配置文件，填入正确的参数值：")
-    print(f"   vim {config_path}")
-    print("\n✨ 编辑完成后，使用以下命令开始同步：")
-    print(f"   python3 {sys.argv[0]} --project {project_name}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.success("✅ 配置文件已创建")
+    logger.info("=" * 60)
+    logger.info(f"📁 配置文件位置: {config_path}")
+    logger.info("=" * 60)
+    logger.info("📋 当前配置内容（示例）:")
+    logger.info("=" * 60)
+    logger.info(json.dumps(example_config, indent=4, ensure_ascii=False))
+    logger.info("=" * 60)
+    logger.info("\n📝 请编辑配置文件，填入正确的参数值：")
+    logger.info(f"   vim {config_path}")
+    logger.info("\n✨ 编辑完成后，使用以下命令开始同步：")
+    logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+    logger.info("=" * 60)
 
 # ========== 列出所有项目 ==========
 
@@ -750,12 +906,12 @@ def list_projects():
     sync2pod_dir = home / '.sync2pod'
     
     if not sync2pod_dir.exists():
-        print("=" * 60)
-        print("📋 没有找到任何项目配置")
-        print("=" * 60)
-        print("\n请先初始化项目配置：")
-        print("  python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("📋 没有找到任何项目配置")
+        logger.info("=" * 60)
+        logger.info("\n请先初始化项目配置：")
+        logger.info("  python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
+        logger.info("=" * 60)
         return
     
     # 收集所有项目
@@ -778,24 +934,24 @@ def list_projects():
                     pass
     
     if not projects:
-        print("=" * 60)
-        print("📋 没有找到任何有效的项目配置")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("📋 没有找到任何有效的项目配置")
+        logger.info("=" * 60)
         return
     
-    print("=" * 60)
-    print(f"📋 已配置的项目 (共 {len(projects)} 个)")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"📋 已配置的项目 (共 {len(projects)} 个)")
+    logger.info("=" * 60)
     for i, proj in enumerate(projects, 1):
-        print(f"\n{i}. 项目名: {proj['name']}")
-        print(f"   本地路径: {proj['local_path']}")
-        print(f"   远程路径: {proj['remote_path']}")
-        print(f"   集群: {proj['cluster']}")
-        print(f"   命名空间: {proj['namespace']}")
-    print("\n" + "=" * 60)
-    print("💡 使用以下命令开始同步：")
-    print(f"   python3 {sys.argv[0]} --project <项目名>")
-    print("=" * 60)
+        logger.info(f"\n{i}. 项目名: {proj['name']}")
+        logger.info(f"   本地路径: {proj['local_path']}")
+        logger.info(f"   远程路径: {proj['remote_path']}")
+        logger.info(f"   集群: {proj['cluster']}")
+        logger.info(f"   命名空间: {proj['namespace']}")
+    logger.info("\n" + "=" * 60)
+    logger.info("💡 使用以下命令开始同步：")
+    logger.info(f"   python3 {sys.argv[0]} --project <项目名>")
+    logger.info("=" * 60)
 
 # ========== 主流程 ==========
 
@@ -842,12 +998,12 @@ def main():
     # 模式2：初始化配置
     if args.init_config:
         if not args.local_path:
-            print("❌ 错误: --init-config 需要配合 --local-path 使用")
+            logger.error("❌ 错误: --init-config 需要配合 --local-path 使用")
             sys.exit(1)
         
         local_path = os.path.abspath(args.local_path)
         if not os.path.exists(local_path):
-            print(f"❌ 错误: 本地路径不存在: {local_path}")
+            logger.error(f"❌ 错误: 本地路径不存在: {local_path}")
             sys.exit(1)
         
         # 从本地路径推导项目名
@@ -857,11 +1013,11 @@ def main():
     
     # 模式3：同步 - 仅支持 --project
     if not args.project:
-        print("❌ 错误: 请指定操作模式")
-        print("\n使用说明:")
-        print("  初始化:   python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
-        print("  查看项目: python3 sync_local_to_pod_optimized.py --list-projects")
-        print("  同步:     python3 sync_local_to_pod_optimized.py --project <项目名>")
+        logger.error("❌ 错误: 请指定操作模式")
+        logger.info("\n使用说明:")
+        logger.info("  初始化:   python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
+        logger.info("  查看项目: python3 sync_local_to_pod_optimized.py --list-projects")
+        logger.info("  同步:     python3 sync_local_to_pod_optimized.py --project <项目名>")
         sys.exit(1)
     
     project_name = args.project
@@ -869,10 +1025,10 @@ def main():
     # 加载配置文件
     config_path = get_config_path(project_name)
     if not config_path.exists():
-        print(f"❌ 错误: 项目 '{project_name}' 的配置文件不存在")
-        print(f"\n请先初始化配置或查看可用项目:")
-        print(f"  初始化: python3 {sys.argv[0]} --init-config --local-path <本地路径>")
-        print(f"  查看:   python3 {sys.argv[0]} --list-projects")
+        logger.error(f"❌ 错误: 项目 '{project_name}' 的配置文件不存在")
+        logger.info(f"\n请先初始化配置或查看可用项目:")
+        logger.info(f"  初始化: python3 {sys.argv[0]} --init-config --local-path <本地路径>")
+        logger.info(f"  查看:   python3 {sys.argv[0]} --list-projects")
         sys.exit(1)
     
     config = load_config(project_name)
@@ -887,8 +1043,8 @@ def main():
     missing_fields = [field for field in required_fields if not config.get(field)]
     
     if missing_fields:
-        print(f"❌ 错误: 配置文件缺少必需字段: {', '.join(missing_fields)}")
-        print(f"\n请编辑配置文件: {config_path}")
+        logger.error(f"❌ 错误: 配置文件缺少必需字段: {', '.join(missing_fields)}")
+        logger.info(f"\n请编辑配置文件: {config_path}")
         sys.exit(1)
     
     # 获取参数
@@ -902,43 +1058,47 @@ def main():
     max_workers = config.get('max_workers', 10)
     show_concurrency = config.get('show_concurrency', False)
     no_watch = config.get('no_watch', False)
+    debounce_seconds = config.get('debounce_seconds', 1.0)  # 默认1秒防抖
     
     # 如果需要验证，显示重要配置信息并等待确认
     if not skip_verify:
-        print("=" * 60)
-        print("⚠️  同步前配置确认")
-        print("=" * 60)
-        print(f"集群 (cluster):     {cluster}")
-        print(f"命名空间 (namespace): {namespace}")
-        print(f"Pod标签 (pod_label): {pod_label}")
-        print(f"远程路径 (remote_path): {remote_path}")
-        print(f"本地路径 (local_path):  {local_path}")
-        print("=" * 60)
-        print("⚠️  请仔细核对以上配置，确认无误后按回车继续...")
-        print("   (如需跳过此确认，可在配置文件中设置 skip_verify: true")
-        print("    或使用命令行参数 --skip-verify)")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("⚠️  同步前配置确认")
+        logger.info("=" * 60)
+        logger.info(f"集群 (cluster):     {cluster}")
+        logger.info(f"命名空间 (namespace): {namespace}")
+        logger.info(f"Pod标签 (pod_label): {pod_label}")
+        logger.info(f"远程路径 (remote_path): {remote_path}")
+        logger.info(f"本地路径 (local_path):  {local_path}")
+        logger.info("=" * 60)
+        logger.info("⚠️  请仔细核对以上配置，确认无误后按回车继续...")
+        logger.info("   (如需跳过此确认，可在配置文件中设置 skip_verify: true")
+        logger.info("    或使用命令行参数 --skip-verify)")
+        logger.info("=" * 60)
         try:
             input()
         except KeyboardInterrupt:
-            print("\n\n❌ 用户取消同步")
+            logger.error("\n\n❌ 用户取消同步")
             sys.exit(0)
-        print("✅ 确认完成，开始同步...\n")
+        logger.success("✅ 确认完成，开始同步...\n")
     
     # 验证本地路径
     if not os.path.exists(local_path):
-        print(f"❌ 错误: 本地路径不存在: {local_path}")
-        print(f"\n请检查配置文件中的 local_path: {config_path}")
+        logger.error(f"❌ 错误: 本地路径不存在: {local_path}")
+        logger.info(f"\n请检查配置文件中的 local_path: {config_path}")
         sys.exit(1)
     
     if not (cluster and namespace and pod_label and remote_path):
-        print('[ERROR] cluster/namespace/pod_label/remote_path 必填', file=sys.stderr)
+        logger.error('cluster/namespace/pod_label/remote_path 必填')
         sys.exit(1)
+    
+    # 配置logger（根据debug模式）
+    configure_logger(debug)
     
     # 选择 pod
     pod_name = select_running_pod_by_label(cluster, namespace, pod_label)
     if debug:
-        print(f'[DEBUG] 选择到 pod: {pod_name}')
+        logger.debug(f'选择到 pod: {pod_name}')
     
     # 判断同步方式
     if force_full_sync:
@@ -947,21 +1107,21 @@ def main():
         
         file_count = count_files(local_path, exclude_paths)
         if debug:
-            print(f'[DEBUG] 本地文件数: {file_count}')
-        print(f'🗜️  强制全量同步模式，使用压缩打包上传...')
+            logger.debug(f'本地文件数: {file_count}')
+        logger.info(f'🗜️  强制全量同步模式，使用压缩打包上传...')
         
         with tempfile.TemporaryDirectory() as tmpdir:
             tar_path = os.path.join(tmpdir, 'sync_upload.tar.gz')
             
             # 1. 压缩文件
-            print('📦 正在压缩本地目录...')
+            logger.info('📦 正在压缩本地目录...')
             compress_start = time.time()
-            compress_dir(local_path, tar_path, exclude_paths)
+            compress_dir(local_path, tar_path, exclude_paths, debug)
             compress_end = time.time()
             compress_time = compress_end - compress_start
             
             compressed_size = os.path.getsize(tar_path)
-            print(f'✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)')
+            logger.success(f'✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)')
             
             # 计算 remote_path 的父目录
             remote_parent = os.path.dirname(remote_path)
@@ -973,51 +1133,51 @@ def main():
             cmd_extract = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "rm -rf {remote_path}/* && tar -xzf {remote_tar_path} -C {remote_path} && rm {remote_tar_path}"'
             
             if debug:
-                print(f'[DEBUG] 上传压缩包命令: {cmd_cp}')
-                print(f'[DEBUG] 解压并清理命令: {cmd_extract}')
+                logger.debug(f'上传压缩包命令: {cmd_cp}')
+                logger.debug(f'解压并清理命令: {cmd_extract}')
             
             # 2. 上传压缩包
-            print('📤 上传压缩包...')
+            logger.info('📤 上传压缩包...')
             upload_start = time.time()
             os.system(cmd_cp)
             upload_end = time.time()
             upload_time = upload_end - upload_start
-            print(f'✅ 上传完成 (耗时: {upload_time:.2f}s)')
+            logger.success(f'✅ 上传完成 (耗时: {upload_time:.2f}s)')
             
             # 3. 远端解压
-            print('📦 解压并清理 (清空 -> 解压 -> 删除临时文件)...')
+            logger.info('📦 解压并清理 (清空 -> 解压 -> 删除临时文件)...')
             extract_start = time.time()
             os.system(cmd_extract)
             extract_end = time.time()
             extract_time = extract_end - extract_start
-            print(f'✅ 解压完成 (耗时: {extract_time:.2f}s)')
+            logger.success(f'✅ 解压完成 (耗时: {extract_time:.2f}s)')
             
         force_sync_end = time.time()
         total_time = force_sync_end - force_sync_start
         
-        print("\n" + "=" * 60)
-        print("⏱️  强制全量同步耗时统计")
-        print("=" * 60)
-        print(f"  1. 压缩文件:   {compress_time:.2f}s")
-        print(f"  2. 上传文件:   {upload_time:.2f}s")
-        print(f"  3. 远端解压:   {extract_time:.2f}s")
-        print(f"  总耗时:        {total_time:.2f}s")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("⏱️  强制全量同步耗时统计")
+        logger.info("=" * 60)
+        logger.info(f"  1. 压缩文件:   {compress_time:.2f}s")
+        logger.info(f"  2. 上传文件:   {upload_time:.2f}s")
+        logger.info(f"  3. 远端解压:   {extract_time:.2f}s")
+        logger.info(f"  总耗时:        {total_time:.2f}s")
+        logger.info("=" * 60)
     else:
         # 智能增量同步：总是进行 MD5 对比，根据待上传文件数选择上传方式
         file_count = count_files(local_path, exclude_paths)
         if debug:
-            print(f'[DEBUG] 本地文件数: {file_count}')
-        print(f'📊 本地文件数: {file_count}，开始 MD5 对比增量同步...')
+            logger.debug(f'本地文件数: {file_count}')
+        logger.info(f'📊 本地文件数: {file_count}，开始 MD5 对比增量同步...')
         upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, debug, max_workers, exclude_paths)
     
     # 启动文件监听（除非配置文件中指定 no_watch）
     if not no_watch:
-        print(f"👀 启动文件变更监听... (最大并发数: {max_workers})")
+        logger.info(f"👀 启动文件变更监听... (最大并发数: {max_workers}, 防抖延迟: {debounce_seconds}s)")
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             event_handler = FileChangeHandler(
                 local_path, namespace, pod_name, remote_path, cluster, 
-                executor, debug, show_concurrency, exclude_paths
+                executor, debug, show_concurrency, exclude_paths, debounce_seconds
             )
             observer = Observer()
             observer.schedule(event_handler, path=local_path, recursive=True)
@@ -1032,11 +1192,13 @@ def main():
                         if concurrency_info['active'] > 0:
                             event_handler.print_concurrency_status()
             except KeyboardInterrupt:
-                print("\n⏹️  停止文件监听...")
+                logger.info("\n⏹️  停止文件监听...")
                 observer.stop()
             observer.join()
     else:
-        print("✅ 同步完成（文件监听已禁用）")
+        logger.success("✅ 同步完成（文件监听已禁用）")
 
 if __name__ == '__main__':
+    # 先配置基本的logger（初始化和列表项目模式）
+    configure_logger(debug=False)
     main()
