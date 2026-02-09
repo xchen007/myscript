@@ -1,11 +1,10 @@
-
-#!/usr/bin/env python3
+#!/usr/local/bin/python3
 """
 优化版 sync_local_to_pod 脚本
 - 支持通过 pod label 自动选择 running pod
 - 支持 --compress-threshold（默认50，配置文件持久化）
 - 支持 --force-full-sync 强制全量同步
-- 配置文件存储于 ~/.sync2pod/$project_name/.sync_config.json
+- 配置文件存储于 ~/.sync2pod/$project_name/sync_config.json
 - MD5 对比增量同步
 - 实时文件监听（watchdog）
 - 多线程并发上传
@@ -27,6 +26,54 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
+
+# ========== 子进程执行封装 ==========
+
+def run_cmd(command, *, debug=False, desc=None, timeout=600, retries=0, retry_delay=1.0, check=True):
+    """统一执行命令（主要用于 tess kubectl / 本地命令）。
+
+    - command: str（当前脚本仍大量使用 shell 字符，先收敛到这里，后续再逐步去 shell=True）
+    - timeout: 秒
+    - retries: 失败重试次数（0 表示不重试）
+    - check: True 则失败抛 CalledProcessError
+
+    返回 subprocess.CompletedProcess
+    """
+    if desc:
+        logger.debug(f"[cmd] {desc}: {command}") if debug else None
+    elif debug:
+        logger.debug(f"[cmd] {command}")
+
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=check,
+            )
+        except subprocess.TimeoutExpired as e:
+            last_err = e
+            logger.error(f"❌ 命令超时({timeout}s){' - ' + desc if desc else ''}: {command}")
+        except subprocess.CalledProcessError as e:
+            last_err = e
+            stderr = (e.stderr or '').strip()
+            if stderr:
+                logger.error(f"❌ 命令执行错误{(' - ' + desc) if desc else ''}: {stderr}")
+            else:
+                logger.error(f"❌ 命令执行失败{(' - ' + desc) if desc else ''} (错误码: {e.returncode})")
+
+        if attempt < retries:
+            logger.warning(f"🔄 重试命令({attempt + 1}/{retries}){(' - ' + desc) if desc else ''}")
+            time.sleep(retry_delay)
+
+    # retries 用尽，抛出最后一次异常，便于上层决定回退/退出
+    if last_err:
+        raise last_err
+    raise RuntimeError("run_cmd: unexpected state")
 
 # ========== 日志配置 ==========
 
@@ -60,7 +107,8 @@ def get_config_path(project_name):
     home = Path.home()
     config_dir = home / '.sync2pod' / project_name
     config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir / '.sync_config.json'
+    # 修改为非隐藏文件名
+    return config_dir / 'sync_config.json'
 
 def load_config(project_name):
     config_path = get_config_path(project_name)
@@ -80,47 +128,36 @@ def save_config(project_name, config):
 
 # ========== K8s Pod 选择逻辑 ==========
 
-def select_running_pod_by_label(cluster, namespace, pod_label):
+def select_running_pod_by_label(cluster, namespace, pod_label, debug=False):
+    """通过 label 选择 running 状态的 pod，返回 pod name。
+
+    说明：
+    - 这里统一使用 run_cmd，获得一致的 debug/超时/重试/错误输出。
+    - 失败时抛出异常，由主流程决定是否退出。
+
+    返回：pod_name(str)
     """
-    通过 label 选择 running 状态的 pod，返回 pod name
-    需依赖 kubectl
-    """
-    import subprocess
     label_selector = pod_label
-    TESS_KUBECTL = ['tess', 'kubectl']
     jsonpath = "{.items[0].metadata.name}"
-    cmd = TESS_KUBECTL.copy()
-    if cluster:
-        cmd += ['--cluster', str(cluster)]
-    cmd += [
-        'get', 'pods',
-        '-n', namespace,
-        '-l', label_selector,
-        '--field-selector=status.phase=Running',
-        '-o', f"jsonpath='{jsonpath}'"
-    ]
-    # debug输出时为shell友好加单引号（去重 -o）
-    cmd_str = ' '.join(cmd)
-    # 检查 debug 环境变量
-    debug = os.environ.get('SYNC2POD_DEBUG', '').lower() == 'true'
-    if not debug:
-        # 兼容主流程传递 debug
-        import inspect
-        frame = inspect.currentframe().f_back
-        debug = frame.f_locals.get('debug', False)
-    if debug:
-        logger.debug(f'查询 running pod 命令: {cmd_str}')
-    try:
-        pod_name = subprocess.check_output(cmd, text=True).strip()
-        # 去除首尾单引号和空白
-        pod_name = pod_name.strip("'\"").strip()
-        if not pod_name:
-            logger.error('未找到 running 状态的 pod')
-            sys.exit(1)
-        return pod_name
-    except Exception as e:
-        logger.error(f'kubectl 查询 pod 失败: {cmd_str}\n{e}')
-        sys.exit(1)
+
+    # 注意：jsonpath 里不需要额外的引号，避免输出带单引号导致 strip 逻辑复杂
+    cmd = (
+        f"tess kubectl --cluster {cluster} "
+        f"-n {namespace} "
+        f"get pods "
+        f"-l {label_selector} "
+        f"--field-selector=status.phase=Running "
+        f"-o jsonpath=\"{jsonpath}\""
+    )
+
+    # kubectl 偶发返回空（pod 正在重建），轻量重试两次
+    result = run_cmd(cmd, debug=debug, desc="select running pod", timeout=30, retries=2, retry_delay=1.0, check=True)
+    pod_name = (result.stdout or "").strip().strip("'\"").strip()
+
+    if not pod_name:
+        raise RuntimeError(f"未找到 running 状态的 pod (namespace={namespace}, label={pod_label})")
+
+    return pod_name
 
 # ========== 工具函数 ==========
 
@@ -256,19 +293,33 @@ def compress_dir(src_dir, out_file, exclude_paths=None, debug=False):
     
     logger.success(f'✅ 压缩完成: 已打包 {added_count} 个文件')
 
+def is_remote_empty(pod_name, namespace, cluster, remote_path, debug=False):
+    """快速判断远端目录是否为空（是否存在至少一个普通文件）。
+
+    目的：避免首次同步时远端为空但仍执行 find+md5sum 全量扫描。
+
+    返回：True 表示远端没有任何文件；False 表示至少存在一个文件。
+    """
+    cmd = (
+        f"tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- "
+        f"bash -c \"test -d {remote_path} && find {remote_path} -type f -print -quit 2>/dev/null\""
+    )
+    result = run_cmd(cmd, debug=debug, desc="probe remote empty", timeout=60, retries=0, check=False)
+    return not bool((result.stdout or "").strip())
+
 def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False, exclude_paths=None):
     """获取 Pod 中所有文件的 MD5 值（排除 exclude_paths）"""
     if exclude_paths is None:
         exclude_paths = []
-    
+
     remote_files = {}
     try:
-        # 获取远程目录中的所有文件
-        command = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- find {remote_path} -type f -exec md5sum {{}} \\; 2>/dev/null || echo ""'
-        if debug:
-            logger.debug(f'执行命令: {command}')
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        
+        command = (
+            f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- '
+            f'find {remote_path} -type f -exec md5sum {{}} \\; 2>/dev/null || echo ""'
+        )
+        result = run_cmd(command, debug=debug, desc="collect remote md5", timeout=600, retries=0, check=False)
+
         if result.returncode == 0 and result.stdout.strip():
             for line in result.stdout.strip().split('\n'):
                 if line.strip():
@@ -276,11 +327,9 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
                     if len(parts) >= 2:
                         md5_value = parts[0]
                         file_path = ' '.join(parts[1:])
-                        # 转换为相对路径
                         if file_path.startswith(remote_path):
                             rel_path = file_path[len(remote_path):].lstrip('/')
-                            
-                            # 检查是否应排除
+
                             should_exclude = False
                             for exclude_path in exclude_paths:
                                 if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
@@ -288,58 +337,114 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
                                     if debug:
                                         logger.debug(f'排除远程文件: {rel_path} (匹配排除模式: {exclude_path})')
                                     break
-                            
+
                             if not should_exclude:
                                 remote_files[rel_path] = md5_value
                                 if debug:
                                     logger.debug(f'远程文件: {rel_path} -> {md5_value}')
     except Exception as e:
         logger.error(f"获取远程文件 MD5 失败: {e}")
-    
+
     return remote_files
 
+
 def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, debug=False, max_workers=10, exclude_paths=None):
-    """初始上传：MD5 对比后仅上传有变化的文件"""
+    """初始上传：MD5 对比后仅上传有变化的文件。若远端为空，直接压缩上传。"""
     start_time = time.time()
-    
     if exclude_paths is None:
         exclude_paths = []
-    
-    # 确保远程目录存在
+
     logger.info("🔎 检查远程目录并收集远程清单...")
-    ensure_dir_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- mkdir -p {remote_path}'
-    if debug:
-        logger.debug(f'执行命令: {ensure_dir_cmd}')
+    ensure_dir_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path}"'
     try:
-        result = subprocess.run(ensure_dir_cmd, shell=True, capture_output=True, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        if e.stderr and e.stderr.strip():
-            logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
-        logger.error(f"❌ 确保远程目录失败: 错误码 {e.returncode}")
+        run_cmd(ensure_dir_cmd, debug=debug, desc="ensure remote dir", timeout=120, retries=1, retry_delay=1.0, check=True)
+    except subprocess.CalledProcessError:
+        # run_cmd 已打印 stderr
+        logger.error("❌ 确保远程目录失败")
         return
-    
-    # 获取远程文件 MD5
-    logger.info("获取远程文件 MD5 值...")
-    remote_files_md5 = get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug, exclude_paths)
-    logger.info(f"远程文件数量: {len(remote_files_md5)}")
-    
+
+    # 先做远端空探测：空则直接走压缩上传
+    if is_remote_empty(pod_name, namespace, cluster, remote_path, debug=debug):
+        logger.info("远端为空（快速探测），直接压缩上传，无需远端MD5扫描/本地MD5对比...")
+        # 复用下面原有“远端为空”压缩上传逻辑：通过构造一个空的 remote_files_md5 进入分支
+        remote_files_md5 = {}
+        logger.info(f"远程文件数量: {len(remote_files_md5)}")
+    else:
+        logger.info("获取远程文件 MD5 值...")
+        remote_files_md5 = get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug, exclude_paths)
+        logger.info(f"远程文件数量: {len(remote_files_md5)}")
+
+    # 远端为空：无需本地MD5对比，直接压缩上传
+    if len(remote_files_md5) == 0:
+        logger.info("远端为空，直接压缩上传，无需本地MD5对比...")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tar_path = os.path.join(tmp_dir, 'sync_upload.tar.gz')
+            logger.info("📦 正在创建压缩包...")
+            compress_start = time.time()
+            compress_dir(local_path, tar_path, exclude_paths, debug)
+            compress_end = time.time()
+            compress_time = compress_end - compress_start
+
+            compressed_size = os.path.getsize(tar_path)
+            logger.success(f"✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)")
+
+            remote_tmp_tar = "/tmp/sync_archive.tar.gz"
+            upload_cmd = f'tess kubectl --cluster {cluster} -n {namespace} cp {tar_path} {pod_name}:{remote_tmp_tar}'
+            logger.info("📤 上传压缩包到 Pod /tmp...")
+            upload_start = time.time()
+            try:
+                run_cmd(upload_cmd, debug=debug, desc="upload archive", timeout=1800, retries=1, retry_delay=2.0, check=True)
+            except subprocess.CalledProcessError:
+                logger.error("❌ 压缩包上传失败")
+                return
+            upload_end = time.time()
+            upload_time = upload_end - upload_start
+            logger.success(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
+
+            extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && tar -xzf {remote_tmp_tar} -C {remote_path} && rm -f {remote_tmp_tar}"'
+            logger.info("📦 解压到远程路径（覆盖模式）...")
+            extract_start = time.time()
+            try:
+                run_cmd(extract_cmd, debug=debug, desc="extract archive", timeout=1800, retries=0, check=True)
+            except subprocess.CalledProcessError:
+                logger.error("❌ 远端解压失败")
+                return
+            extract_end = time.time()
+            extract_time = extract_end - extract_start
+            logger.success(f"✅ 解压完成 (耗时: {extract_time:.2f}s)")
+
+            end_time = time.time()
+            total_time = end_time - start_time
+
+            logger.info("\n" + "=" * 60)
+            logger.info("⏱️  首次压缩同步耗时统计")
+            logger.info("=" * 60)
+            logger.info(f"  1. 压缩文件:   {compress_time:.2f}s")
+            logger.info(f"  2. 上传文件:   {upload_time:.2f}s")
+            logger.info(f"  3. 远端解压:   {extract_time:.2f}s")
+            logger.info(f"  总耗时:        {total_time:.2f}s")
+            logger.info("=" * 60)
+            logger.success("🎉 首次同步完成！开始文件变更监听...")
+            logger.info("=" * 60)
+            return
+
     # 收集需要上传的文件和需要创建的目录
     directories_to_create = set()
     files_to_upload = []
     files_skipped = 0
-    
+
     for root, dirs, files in os.walk(local_path):
         # 排除隐藏目录
         dirs[:] = [d for d in dirs if not d.startswith('.')]
-        
+
         for file in files:
             # 跳过隐藏文件
             if file.startswith('.'):
                 continue
-            
+
             file_path = os.path.join(root, file)
             rel_path = os.path.relpath(file_path, local_path)
-            
+
             # 检查是否应排除
             should_exclude = False
             for exclude_path in exclude_paths:
@@ -348,13 +453,13 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                     if debug:
                         logger.debug(f'排除文件: {rel_path} (匹配排除模式: {exclude_path})')
                     break
-            
+
             if should_exclude:
                 continue
-            
+
             # 计算本地文件 MD5
             local_md5 = calculate_file_md5(file_path)
-            
+
             # 检查是否需要上传
             need_upload = True
             if rel_path in remote_files_md5:
@@ -362,12 +467,12 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                 if local_md5 == remote_md5:
                     need_upload = False
                     files_skipped += 1
-            
+
             if need_upload:
                 remote_dir = os.path.dirname(os.path.join(remote_path, rel_path))
                 directories_to_create.add(remote_dir)
                 files_to_upload.append((file_path, rel_path))
-    
+
     local_total_files = files_skipped + len(files_to_upload)
     logger.info(f"📊 清单汇总 -> 远程: {len(remote_files_md5)} | 本地: {local_total_files} | 待上传: {len(files_to_upload)}")
     
@@ -375,44 +480,37 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
     if len(files_to_upload) > 100:
         logger.info("🗜️  待上传文件数超过阈值 (100)，使用压缩打包快速路径...")
         try:
-            # 创建压缩包
             logger.info("📦 正在创建压缩包...")
             compress_start = time.time()
-            with tempfile.TemporaryDirectory() as tmpdir:
-                tar_path = os.path.join(tmpdir, 'sync_upload.tar.gz')
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tar_path = os.path.join(tmp_dir, 'sync_upload.tar.gz')
                 compress_dir(local_path, tar_path, exclude_paths, debug)
                 compress_end = time.time()
                 compress_time = compress_end - compress_start
-                
+
                 compressed_size = os.path.getsize(tar_path)
                 logger.success(f"✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)")
-                
-                # 上传到临时位置
+
                 remote_tmp_tar = "/tmp/sync_archive.tar.gz"
                 upload_cmd = f'tess kubectl --cluster {cluster} -n {namespace} cp {tar_path} {pod_name}:{remote_tmp_tar}'
-                if debug:
-                    logger.debug(f'执行命令: {upload_cmd}')
                 logger.info("📤 上传压缩包到 Pod /tmp...")
                 upload_start = time.time()
-                result = subprocess.run(upload_cmd, shell=True, capture_output=True, text=True, check=True)
+                run_cmd(upload_cmd, debug=debug, desc="upload archive", timeout=1800, retries=1, retry_delay=2.0, check=True)
                 upload_end = time.time()
                 upload_time = upload_end - upload_start
                 logger.success(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
-                
-                # 解压到目标目录（覆盖模式）
+
                 extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && tar -xzf {remote_tmp_tar} -C {remote_path} && rm -f {remote_tmp_tar}"'
-                if debug:
-                    logger.debug(f'执行命令: {extract_cmd}')
                 logger.info("📦 解压到远程路径（覆盖模式）...")
                 extract_start = time.time()
-                result = subprocess.run(extract_cmd, shell=True, capture_output=True, text=True, check=True)
+                run_cmd(extract_cmd, debug=debug, desc="extract archive", timeout=1800, retries=0, check=True)
                 extract_end = time.time()
                 extract_time = extract_end - extract_start
                 logger.success(f"✅ 解压完成 (耗时: {extract_time:.2f}s)")
-                
+
             end_time = time.time()
             total_time = end_time - start_time
-            
+
             logger.info("\n" + "=" * 60)
             logger.info("⏱️  快速压缩同步耗时统计")
             logger.info("=" * 60)
@@ -424,10 +522,8 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             logger.success("🎉 初始同步完成！开始文件变更监听...")
             logger.info("=" * 60)
             return
-        except subprocess.CalledProcessError as e:
-            if e.stderr and e.stderr.strip():
-                logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
-            logger.error(f"❌ 压缩快速路径失败 (错误码: {e.returncode})，回退到增量上传")
+        except subprocess.CalledProcessError:
+            logger.error("❌ 压缩快速路径失败，回退到增量上传")
         except Exception as e:
             logger.error(f"❌ 创建或上传压缩包失败: {e}，回退到增量上传")
     
@@ -454,23 +550,20 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             logger.info(f"\n📁 创建远程目录: {len(filtered_dirs)} 个目录")
             all_dirs = ' '.join(filtered_dirs)
             mkdir_command = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- mkdir -p {all_dirs}'
-            if debug:
-                logger.debug(f'执行命令: {mkdir_command}')
             try:
-                result = subprocess.run(mkdir_command, shell=True, capture_output=True, text=True, check=True)
+                run_cmd(mkdir_command, debug=debug, desc="mkdir remote dirs", timeout=300, retries=1, retry_delay=1.0, check=True)
                 logger.success(f"✅ 目录创建成功: {len(filtered_dirs)} 个目录")
-            except subprocess.CalledProcessError as e:
-                if e.stderr and e.stderr.strip():
-                    logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
-                logger.error(f"❌ 目录创建失败: 错误码 {e.returncode}")
-    
+            except subprocess.CalledProcessError:
+                logger.error("❌ 目录创建失败")
+
     # 并发上传文件
     if files_to_upload:
         logger.info(f"\n开始并发文件上传... (最大并发数: {max_workers})")
-        
+
         completed_files = 0
+        completed_lock = threading.Lock()
         total_files = len(files_to_upload)
-        
+
         def upload_single_file(file_info):
             nonlocal completed_files
             file_path, rel_path = file_info
@@ -478,39 +571,51 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             size_str = format_file_size(file_size)
             logger.info(f"📤 上传文件: {rel_path} ({size_str})")
             command = f'tess kubectl --cluster {cluster} -n {namespace} cp {file_path} {pod_name}:{os.path.join(remote_path, rel_path)}'
-            
+
             # 重试机制
             max_retries = 3
-            start_time = time.time()
+            start_one = time.time()
             for attempt in range(max_retries):
                 try:
-                    if debug:
-                        logger.debug(f'执行命令: {command}')
-                    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
-                    end_time = time.time()
-                    sync_time = end_time - start_time
-                    completed_files += 1
-                    progress = (completed_files / total_files) * 100
+                    run_cmd(
+                        command,
+                        debug=debug,
+                        desc=f"upload file {rel_path}",
+                        timeout=1800,
+                        retries=0,
+                        check=True,
+                    )
+                    end_one = time.time()
+                    sync_time = end_one - start_one
+
+                    with completed_lock:
+                        completed_files += 1
+                        progress = (completed_files / total_files) * 100
+
                     if attempt > 0:
-                        logger.success(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [{progress:.1f}%]")
+                        logger.success(
+                            f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [{progress:.1f}%]"
+                        )
                     else:
                         logger.success(f"✅ 文件上传成功: {rel_path} (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
                     return True
                 except subprocess.CalledProcessError as e:
-                    # 记录错误输出
-                    if e.stderr and e.stderr.strip():
-                        logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
-                    
                     if attempt < max_retries - 1:
                         logger.warning(f"🔄 重试文件上传: {rel_path} (第 {attempt + 1} 次尝试)")
-                    else:
-                        end_time = time.time()
-                        sync_time = end_time - start_time
+                        continue
+
+                    end_one = time.time()
+                    sync_time = end_one - start_one
+
+                    with completed_lock:
                         completed_files += 1
                         progress = (completed_files / total_files) * 100
-                        logger.error(f"❌ 文件上传失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s) [{progress:.1f}%]")
-                        return False
-        
+
+                    logger.error(
+                        f"❌ 文件上传失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s) [{progress:.1f}%]"
+                    )
+                    return False
+
         # 使用线程池并发上传
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             logger.info(f"📊 开始并发上传，最大并发数: {max_workers}")
@@ -767,44 +872,31 @@ class FileChangeHandler(FileSystemEventHandler):
             rel_path = os.path.relpath(file_path, self.local_path)
             file_size = os.path.getsize(file_path)
             size_str = format_file_size(file_size)
-            
+
             # 确保远程目录存在
             remote_dir = os.path.dirname(os.path.join(self.remote_path, rel_path))
             mkdir_command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} exec {self.pod_name} -- mkdir -p {remote_dir}'
-            if self.debug:
-                logger.debug(f'执行命令: {mkdir_command}')
-            result = subprocess.run(mkdir_command, shell=True, capture_output=True, text=True)
-            if result.returncode != 0 and result.stderr:
-                logger.error(f"❌ 创建远程目录失败: {result.stderr.strip()}")
-            
+            try:
+                run_cmd(mkdir_command, debug=self.debug, desc=f"mkdir {remote_dir}", timeout=120, retries=1, retry_delay=1.0, check=True)
+            except subprocess.CalledProcessError:
+                # mkdir 失败不直接阻断，仍继续尝试上传（有些情况下目录已存在但返回码异常）
+                logger.error(f"❌ 创建远程目录失败: {remote_dir}")
+
             # 上传文件
             command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} cp {file_path} {self.pod_name}:{os.path.join(self.remote_path, rel_path)}'
-            
-            # 重试机制
+
+            # 重试机制（交给 run_cmd 执行）
             max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    if self.debug:
-                        logger.debug(f'执行命令: {command}')
-                    result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
-                    end_time = time.time()
-                    sync_time = end_time - start_time
-                    if attempt > 0:
-                        logger.success(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) (重试 {attempt} 次后成功) [实时同步]")
-                    else:
-                        logger.success(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) [实时同步]")
-                    return
-                except subprocess.CalledProcessError as e:
-                    # 记录错误输出
-                    if e.stderr and e.stderr.strip():
-                        logger.error(f"❌ 命令执行错误: {e.stderr.strip()}")
-                    
-                    if attempt < max_retries - 1:
-                        logger.warning(f"🔄 重试文件同步: {rel_path} (第 {attempt + 1} 次尝试)")
-                    else:
-                        end_time = time.time()
-                        sync_time = end_time - start_time
-                        logger.error(f"❌ 文件同步失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s)")
+            try:
+                run_cmd(command, debug=self.debug, desc=f"realtime upload {rel_path}", timeout=1800, retries=max_retries - 1, retry_delay=1.0, check=True)
+                end_time = time.time()
+                sync_time = end_time - start_time
+                logger.success(f"✅ 文件同步成功: {rel_path} (耗时: {sync_time:.2f}s) [实时同步]")
+                return
+            except subprocess.CalledProcessError as e:
+                end_time = time.time()
+                sync_time = end_time - start_time
+                logger.error(f"❌ 文件同步失败: {rel_path} - 错误码: {e.returncode} ({max_retries} 次重试后失败) (耗时: {sync_time:.2f}s)")
         finally:
             # 无论成功还是失败，都从处理列表中移除
             if file_path in self.processing_files:
@@ -861,9 +953,9 @@ def init_config(project_name, local_path):
     # 创建示例配置
     example_config = {
         "cluster": "908",
-        "namespace": "your-namespace",
+        "namespace": "sdsnushare01-dev",
         "pod_label": "app=your-app",
-        "remote_path": "/path/in/pod",
+        "remote_path": "/mnt/gfs-develop/workspace",
         "local_path": local_path,
         "compress_threshold": 50,
         "max_workers": 10,
@@ -873,9 +965,9 @@ def init_config(project_name, local_path):
         "skip_verify": False,
         "debounce_seconds": 1.0,
         "exclude_paths": [
-            "示例: node_modules",
-            "示例: *.log",
-            "示例: dist/build"
+            "node_modules",
+            "*.log",
+            "dist/build"
         ]
     }
     
@@ -917,7 +1009,7 @@ def list_projects():
     projects = []
     for project_dir in sync2pod_dir.iterdir():
         if project_dir.is_dir():
-            config_file = project_dir / '.sync_config.json'
+            config_file = project_dir / 'sync_config.json'
             if config_file.exists():
                 try:
                     with open(config_file, 'r') as f:
@@ -1064,6 +1156,7 @@ def main():
         logger.info("=" * 60)
         logger.info("⚠️  同步前配置确认")
         logger.info("=" * 60)
+        logger.info(f"配置文件 (config):   {config_path}")
         logger.info(f"集群 (cluster):     {cluster}")
         logger.info(f"命名空间 (namespace): {namespace}")
         logger.info(f"Pod标签 (pod_label): {pod_label}")
@@ -1095,7 +1188,13 @@ def main():
     configure_logger(debug)
     
     # 选择 pod
-    pod_name = select_running_pod_by_label(cluster, namespace, pod_label)
+    pod_name = None
+    try:
+        pod_name = select_running_pod_by_label(cluster, namespace, pod_label, debug=debug)
+    except Exception as e:
+        logger.error(f"❌ 选择 Pod 失败: {e}")
+        sys.exit(1)
+    logger.info(f"🎯 目标 Pod: {pod_name} (namespace={namespace}, label={pod_label})")
     if debug:
         logger.debug(f'选择到 pod: {pod_name}')
     
@@ -1109,9 +1208,9 @@ def main():
             logger.debug(f'本地文件数: {file_count}')
         logger.info(f'🗜️  强制全量同步模式，使用压缩打包上传...')
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tar_path = os.path.join(tmpdir, 'sync_upload.tar.gz')
-            
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tar_path = os.path.join(tmp_dir, 'sync_upload.tar.gz')
+
             # 1. 压缩文件
             logger.info('📦 正在压缩本地目录...')
             compress_start = time.time()
@@ -1138,15 +1237,23 @@ def main():
             # 2. 上传压缩包
             logger.info('📤 上传压缩包...')
             upload_start = time.time()
-            os.system(cmd_cp)
+            try:
+                run_cmd(cmd_cp, debug=debug, desc="force upload archive", timeout=1800, retries=1, retry_delay=2.0, check=True)
+            except subprocess.CalledProcessError:
+                logger.error("❌ 上传压缩包失败")
+                sys.exit(1)
             upload_end = time.time()
             upload_time = upload_end - upload_start
             logger.success(f'✅ 上传完成 (耗时: {upload_time:.2f}s)')
-            
+
             # 3. 远端解压
             logger.info('📦 解压并清理 (清空 -> 解压 -> 删除临时文件)...')
             extract_start = time.time()
-            os.system(cmd_extract)
+            try:
+                run_cmd(cmd_extract, debug=debug, desc="force extract archive", timeout=1800, retries=0, check=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ 解压并清理失败 (错误码: {e.returncode})")
+                sys.exit(1)
             extract_end = time.time()
             extract_time = extract_end - extract_start
             logger.success(f'✅ 解压完成 (耗时: {extract_time:.2f}s)')
