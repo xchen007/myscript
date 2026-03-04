@@ -16,11 +16,11 @@ import sys
 import json
 import tarfile
 import tempfile
-import shutil
 import hashlib
 import time
 import subprocess
 import threading
+import math
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -103,16 +103,20 @@ def configure_logger(debug=False):
 
 # ========== 配置管理 ==========
 
-def get_config_path(project_name):
+def get_config_path(project_path):
+    """获取配置文件路径和目录存在状态"""
+    project_name = os.path.basename(project_path)
     home = Path.home()
     config_dir = home / '.sync2pod' / project_name
-    config_dir.mkdir(parents=True, exist_ok=True)
-    # 修改为非隐藏文件名
-    return config_dir / 'sync_config.json'
+    config_file = config_dir / 'sync_config.json'
+    dir_exists = config_dir.exists()
+    
+    return dir_exists, str(config_file)
 
 def load_config(project_name):
-    config_path = get_config_path(project_name)
-    if config_path.exists():
+    dir_exists, config_path = get_config_path(project_name)
+
+    if os.path.exists(config_path):
         with open(config_path, 'r') as f:
             config = json.load(f)
     else:
@@ -122,7 +126,10 @@ def load_config(project_name):
     return config
 
 def save_config(project_name, config):
-    config_path = get_config_path(project_name)
+    dir_exists, config_path = get_config_path(project_name)
+    # 确保目录存在
+    if not dir_exists:
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=4)
 
@@ -167,7 +174,7 @@ def calculate_file_md5(file_path):
     hash_md5 = hashlib.md5()
     try:
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+            for chunk in iter(lambda: f.read(65536), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
     except Exception as e:
@@ -178,15 +185,24 @@ def format_file_size(size_bytes):
     """格式化文件大小显示"""
     if size_bytes == 0:
         return "0 B"
-    
+
     size_names = ["B", "KB", "MB", "GB", "TB"]
-    import math
     i = int(math.floor(math.log(size_bytes, 1024)))
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_names[i]}"
 
 # ========== 文件同步逻辑 ==========
+
+def should_exclude_path(rel_path, exclude_paths):
+    """检查路径是否应被排除"""
+    if not exclude_paths:
+        return False
+    for exclude_path in exclude_paths:
+        if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
+            return True
+    return False
+
 
 def count_files(local_path, exclude_paths=None):
     """统计需要同步的文件数量（排除隐藏文件）"""
@@ -204,16 +220,10 @@ def count_files(local_path, exclude_paths=None):
             rel_path = os.path.relpath(file_path, local_path)
             
             # 检查是否在排除路径中
-            should_exclude = False
-            if exclude_paths:
-                for exclude_path in exclude_paths:
-                    if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                        should_exclude = True
-                        break
-            
-            if not should_exclude:
-                cnt += 1
-    
+            if should_exclude_path(rel_path, exclude_paths):
+                continue
+            cnt += 1
+
     return cnt
 
 def compress_dir(src_dir, out_file, exclude_paths=None, debug=False):
@@ -256,15 +266,10 @@ def compress_dir(src_dir, out_file, exclude_paths=None, debug=False):
             rel_path = os.path.relpath(file_path, src_dir)
             
             # 检查文件是否应排除
-            should_exclude = False
-            for exclude_path in exclude_paths:
-                if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                    should_exclude = True
-                    if debug:
-                        logger.debug(f'排除文件: {rel_path}')
-                    break
-            
-            if not should_exclude:
+            if should_exclude_path(rel_path, exclude_paths):
+                should_exclude = True
+                if debug:
+                    logger.debug(f'排除文件: {rel_path}')
                 try:
                     file_size = os.path.getsize(file_path)
                     files_to_compress.append((file_path, rel_path, file_size))
@@ -329,14 +334,12 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
                         file_path = ' '.join(parts[1:])
                         if file_path.startswith(remote_path):
                             rel_path = file_path[len(remote_path):].lstrip('/')
-
                             should_exclude = False
-                            for exclude_path in exclude_paths:
-                                if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                                    should_exclude = True
-                                    if debug:
-                                        logger.debug(f'排除远程文件: {rel_path} (匹配排除模式: {exclude_path})')
-                                    break
+                            # 检查文件是否应排除
+                            if should_exclude_path(rel_path, exclude_paths):
+                                should_exclude = True
+                                if debug:
+                                    logger.debug(f'排除远程文件: {rel_path} (匹配排除模式)')
 
                             if not should_exclude:
                                 remote_files[rel_path] = md5_value
@@ -446,15 +449,9 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             rel_path = os.path.relpath(file_path, local_path)
 
             # 检查是否应排除
-            should_exclude = False
-            for exclude_path in exclude_paths:
-                if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                    should_exclude = True
-                    if debug:
-                        logger.debug(f'排除文件: {rel_path} (匹配排除模式: {exclude_path})')
-                    break
-
-            if should_exclude:
+            if should_exclude_path(rel_path, exclude_paths):
+                if debug:
+                    logger.debug(f'排除文件: {rel_path}')
                 continue
 
             # 计算本地文件 MD5
@@ -651,7 +648,17 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
 
 class FileChangeHandler(FileSystemEventHandler):
     """处理文件变更事件的监听器"""
-    
+
+    # 常见的临时文件后缀和模式
+    _TEMP_PATTERNS = (
+        lambda n: (
+            n.endswith('~') or n.endswith('.swp') or n.endswith('.swo') or
+            n.endswith('.swn') or n.endswith('.tmp') or n.endswith('.bak') or
+            n.startswith('.#') or n.endswith('#') or n.startswith('~') or
+            '.tmp.' in n or n.endswith('.temp')
+        )
+    )
+
     def __init__(self, local_path, namespace, pod_name, remote_path, cluster, executor, debug=False, show_concurrency=False, exclude_paths=None, debounce_seconds=1.0):
         self.local_path = local_path
         self.namespace = namespace
@@ -733,80 +740,50 @@ class FileChangeHandler(FileSystemEventHandler):
         """文件修改事件"""
         if event.is_directory:
             return
-        
+
         # 排除隐藏文件
         if any(part.startswith('.') for part in event.src_path.split(os.sep)):
             return
-        
+
         # 排除临时文件和备份文件
         file_name = os.path.basename(event.src_path)
-        # 常见的临时文件后缀和模式
-        temp_patterns = [
-            file_name.endswith('~'),           # vim/emacs 备份文件
-            file_name.endswith('.swp'),        # vim 交换文件
-            file_name.endswith('.swo'),        # vim 交换文件
-            file_name.endswith('.swn'),        # vim 交换文件
-            file_name.endswith('.tmp'),        # 临时文件
-            file_name.endswith('.bak'),        # 备份文件
-            file_name.startswith('.#'),        # emacs 锁文件
-            file_name.endswith('#'),           # emacs 自动保存文件
-            file_name.startswith('~'),         # 临时文件
-            '.tmp.' in file_name,              # 临时文件
-            file_name.endswith('.temp'),       # 临时文件
-        ]
-        if any(temp_patterns):
+        if self._TEMP_PATTERNS(file_name):
             if self.debug:
                 logger.debug(f'忽略临时文件: {file_name}')
             return
-        
+
         # 检查是否应排除
         rel_path = os.path.relpath(event.src_path, self.local_path)
-        for exclude_path in self.exclude_paths:
-            if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                if self.debug:
-                    logger.debug(f'忽略修改文件: {rel_path} (匹配排除模式: {exclude_path})')
-                return
-        
+        if should_exclude_path(rel_path, self.exclude_paths):
+            if self.debug:
+                logger.debug(f'忽略修改文件: {rel_path}')
+            return
+
         self.upload_file(event.src_path)
     
     def on_created(self, event):
         """文件创建事件"""
         if event.is_directory:
             return
-        
+
         # 排除隐藏文件
         if any(part.startswith('.') for part in event.src_path.split(os.sep)):
             return
-        
+
         # 排除临时文件和备份文件
         file_name = os.path.basename(event.src_path)
-        # 常见的临时文件后缀和模式
-        temp_patterns = [
-            file_name.endswith('~'),           # vim/emacs 备份文件
-            file_name.endswith('.swp'),        # vim 交换文件
-            file_name.endswith('.swo'),        # vim 交换文件
-            file_name.endswith('.swn'),        # vim 交换文件
-            file_name.endswith('.tmp'),        # 临时文件
-            file_name.endswith('.bak'),        # 备份文件
-            file_name.startswith('.#'),        # emacs 锁文件
-            file_name.endswith('#'),           # emacs 自动保存文件
-            file_name.startswith('~'),         # 临时文件
-            '.tmp.' in file_name,              # 临时文件
-            file_name.endswith('.temp'),       # 临时文件
-        ]
-        if any(temp_patterns):
+        if self._TEMP_PATTERNS(file_name):
             if self.debug:
                 logger.debug(f'忽略临时文件: {file_name}')
             return
-        
+
         # 检查是否应排除
         rel_path = os.path.relpath(event.src_path, self.local_path)
-        for exclude_path in self.exclude_paths:
-            if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(exclude_path + '/'):
-                if self.debug:
-                    logger.debug(f'忽略创建文件: {rel_path} (匹配排除模式: {exclude_path})')
-                return
-        
+        if should_exclude_path(rel_path, self.exclude_paths):
+            if self.debug:
+                logger.debug(f'忽略创建文件: {rel_path}')
+            return
+
         self.upload_file(event.src_path)
     
     def upload_file(self, file_path):
@@ -919,10 +896,10 @@ class FileChangeHandler(FileSystemEventHandler):
 
 def init_config(project_name, local_path):
     """初始化配置文件"""
-    config_path = get_config_path(project_name)
+    dir_exists, config_path = get_config_path(project_name)
     
     # 检查配置文件是否已存在
-    if config_path.exists():
+    if os.path.exists(config_path):
         # 检查是否缺少 local_path 字段，如果缺少则补充
         config = load_config(project_name)
         if 'local_path' not in config or not config.get('local_path'):
@@ -1098,8 +1075,8 @@ def main():
             sys.exit(1)
         
         # 从本地路径推导项目名
-        project_name = os.path.basename(os.path.normpath(local_path))
-        init_config(project_name, local_path)
+        project_path = os.path.basename(os.path.normpath(local_path))
+        init_config(project_path, local_path)
         return
     
     # 模式3：同步 - 仅支持 --project
@@ -1111,18 +1088,19 @@ def main():
         logger.info("  同步:     python3 sync_local_to_pod_optimized.py --project <项目名>")
         sys.exit(1)
     
-    project_name = args.project
+    project_path = args.project
     
     # 加载配置文件
-    config_path = get_config_path(project_name)
-    if not config_path.exists():
-        logger.error(f"❌ 错误: 项目 '{project_name}' 的配置文件不存在")
+    dir_exists, config_path = get_config_path(project_path)
+    # if not config_path.exists():
+    if not os.path.exists(config_path):
+        logger.error(f"❌ 错误: 项目 '{project_path}' 的配置文件不存在")
         logger.info(f"\n请先初始化配置或查看可用项目:")
         logger.info(f"  初始化: python3 {sys.argv[0]} --init-config --local-path <本地路径>")
         logger.info(f"  查看:   python3 {sys.argv[0]} --list-projects")
         sys.exit(1)
     
-    config = load_config(project_name)
+    config = load_config(project_path)
     
     # force 参数仅从命令行读取，不持久化
     # skip_verify 可从命令行或配置文件读取，命令行优先
