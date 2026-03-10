@@ -768,6 +768,10 @@ class FileChangeHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         """文件修改事件"""
+        # 添加调试日志
+        if self.debug:
+            logger.debug(f"[监听] on_modified 事件: {event.src_path}, is_directory={event.is_directory}")
+
         if event.is_directory:
             return
 
@@ -809,6 +813,10 @@ class FileChangeHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         """文件创建事件"""
+        # 添加调试日志
+        if self.debug:
+            logger.debug(f"[监听] on_created 事件: {event.src_path}, is_directory={event.is_directory}")
+
         if event.is_directory:
             return
 
@@ -848,9 +856,65 @@ class FileChangeHandler(FileSystemEventHandler):
 
         self.upload_file(event.src_path)
 
+    def on_moved(self, event):
+        """文件移动/重命名事件（捕获 AI 工具的 atomic write 操作）"""
+        if self.debug:
+            logger.debug(f"[监听] on_moved 事件: src={event.src_path}, dest={event.dest_path}, is_directory={event.is_directory}")
+
+        if event.is_directory:
+            return
+
+        # 检查目录：忽略从监听目录外移动进来的操作，或者目标是临时文件的移动
+        # AI 工具通常会：tmp_file -> 最终文件（这是正常的保存操作，需要处理）
+        # 或者：原文件 -> tmp_file（这是开始写，可以忽略）
+
+        dest_path = event.dest_path
+        src_path = event.src_path
+
+        # 排除隐藏文件
+        if any(part.startswith('.') for part in dest_path.split(os.sep)):
+            if self.debug:
+                logger.debug(f'忽略隐藏文件移动: {dest_path}')
+            return
+
+        # 检查是否应排除
+        rel_path = os.path.relpath(dest_path, self.local_path)
+        for exclude_path in self.exclude_paths:
+            if rel_path == exclude_path or rel_path.startswith(exclude_path + os.sep) or rel_path.startswith(
+                    exclude_path + '/'):
+                if self.debug:
+                    logger.debug(f'忽略移动文件: {rel_path} (匹配排除模式: {exclude_path})')
+                return
+
+        # 如果源路径是临时文件模式，且目标文件不在暂存区域，这可能是 AI 的 atomic write
+        # 常见的临时文件后缀
+        src_name = os.path.basename(src_path)
+        is_tmp_file = (
+            src_name.endswith('.tmp') or
+            src_name.endswith('.temp') or
+            '.tmp.' in src_name or
+            src_name.startswith('.')  # 隐藏的临时文件
+        )
+
+        # 目标文件如果在监听目录内，且源是临时文件，这是正常的保存
+        # 如果源是正常文件，目标在临时位置，忽略
+        dest_in_watch = dest_path.startswith(self.local_path)
+
+        if dest_in_watch:
+            if self.debug:
+                logger.debug(f'处理文件移动（AI 保存检测）: {src_path} -> {dest_path}')
+            # 触发目标文件的上传
+            self.upload_file(dest_path)
+        else:
+            if self.debug:
+                logger.debug(f'目标文件不在监听目录内，忽略: {dest_path}')
+
     def upload_file(self, file_path):
         """上传文件到 Pod（带防抖动）"""
         rel_path = os.path.relpath(file_path, self.local_path)
+
+        if self.debug:
+            logger.debug(f"[防抖] 收到文件变更请求: {rel_path} (完整路径: {file_path})")
 
         # 如果该文件已有防抖定时器在运行，取消它
         if file_path in self.debounce_timers:
@@ -878,6 +942,9 @@ class FileChangeHandler(FileSystemEventHandler):
         timer = threading.Timer(self.debounce_seconds, self._debounced_upload, args=[file_path])
         self.debounce_timers[file_path] = timer
         timer.start()
+
+        if self.debug:
+            logger.debug(f"[防抖] 定时器已创建，将在 {self.debounce_seconds}s 后执行上传")
 
     def _debounced_upload(self, file_path):
         """防抖后实际执行上传"""
@@ -1354,14 +1421,27 @@ def main():
     # 启动文件监听（除非配置文件中指定 no_watch）
     if not no_watch:
         logger.info(f"👀 启动文件变更监听... (最大并发数: {max_workers}, 防抖延迟: {debounce_seconds}s)")
+        logger.info(f"📂 监听路径: {local_path}")
+        logger.debug(f"[监听] 检查本地路径是否存在: {os.path.exists(local_path)}")
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             event_handler = FileChangeHandler(
                 local_path, namespace, pod_name, remote_path, cluster,
                 executor, debug, show_concurrency, exclude_paths, debounce_seconds
             )
             observer = Observer()
+
+            # 检查 observer 是否可用
+            logger.debug(f"[监听] Observer 已创建，开始调度...")
             observer.schedule(event_handler, path=local_path, recursive=True)
+            logger.debug(f"[监听] 已调度监听器到路径: {local_path}, recursive=True")
+
             observer.start()
+            logger.success(f"✅ 文件监听已启动，正在监听 {local_path} 及其子目录...")
+            logger.info("=" * 60)
+            logger.info("💡 提示：现在可以编辑本地文件，变更将自动同步到 Pod")
+            logger.info("   按 Ctrl+C 停止监听")
+            logger.info("=" * 60)
 
             try:
                 while True:
