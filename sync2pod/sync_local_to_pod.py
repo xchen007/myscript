@@ -106,17 +106,6 @@ def configure_logger(debug=False):
 
 # ========== 配置管理 ==========
 
-def get_config_path(project_name):
-    home = Path.home()
-    print(f"home: {home}")
-    config_dir = home / '.sync2pod' / project_name
-    print(f"config_dir: {config_dir}")
-
-    config_dir.mkdir(parents=True, exist_ok=True)
-    # 修改为非隐藏文件名
-    return config_dir / 'sync_config.json'
-
-
 def load_config(project_name):
     config_path = get_config_path(project_name)
     if config_path.exists():
@@ -317,7 +306,7 @@ def compress_dir(src_dir, out_file, exclude_paths=None, debug=False):
     logger.success(f'✅ 压缩完成: 已打包 {added_count} 个文件')
 
 
-def is_remote_empty(pod_name, namespace, cluster, remote_path, debug=False):
+def is_remote_empty(pod_name, namespace, cluster, remote_parent_path, debug=False):
     """快速判断远端目录是否为空（是否存在至少一个普通文件）。
 
     目的：避免首次同步时远端为空但仍执行 find+md5sum 全量扫描。
@@ -326,13 +315,13 @@ def is_remote_empty(pod_name, namespace, cluster, remote_path, debug=False):
     """
     cmd = (
         f"tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- "
-        f"bash -c \"test -d {remote_path} && find {remote_path} -type f -print -quit 2>/dev/null\""
+        f"bash -c \"test -d {remote_parent_path} && find {remote_parent_path} -type f -print -quit 2>/dev/null\""
     )
     result = run_cmd(cmd, debug=debug, desc="probe remote empty", timeout=60, retries=0, check=False)
     return not bool((result.stdout or "").strip())
 
 
-def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False, exclude_paths=None):
+def get_remote_files_md5(pod_name, namespace, cluster, remote_parent_path, debug=False, exclude_paths=None):
     """获取 Pod 中所有文件的 MD5 值（排除 exclude_paths）"""
     if exclude_paths is None:
         exclude_paths = []
@@ -341,7 +330,7 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
     try:
         command = (
             f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- '
-            f'find {remote_path} -type f -exec md5sum {{}} \\; 2>/dev/null || echo ""'
+            f'find {remote_parent_path} -type f -exec md5sum {{}} \\; 2>/dev/null || echo ""'
         )
         result = run_cmd(command, debug=debug, desc="collect remote md5", timeout=600, retries=0, check=False)
 
@@ -352,8 +341,8 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
                     if len(parts) >= 2:
                         md5_value = parts[0]
                         file_path = ' '.join(parts[1:])
-                        if file_path.startswith(remote_path):
-                            rel_path = file_path[len(remote_path):].lstrip('/')
+                        if file_path.startswith(remote_parent_path):
+                            rel_path = file_path[len(remote_parent_path):].lstrip('/')
 
                             should_exclude = False
                             for exclude_path in exclude_paths:
@@ -374,7 +363,7 @@ def get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug=False,
     return remote_files
 
 
-def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, debug=False, max_workers=10,
+def upload_initial_files(local_path, namespace, pod_name, remote_parent_path, cluster, debug=False, max_workers=10,
                          exclude_paths=None):
     """初始上传：MD5 对比后仅上传有变化的文件。若远端为空，直接压缩上传。"""
     start_time = time.time()
@@ -382,7 +371,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
         exclude_paths = []
 
     logger.info("🔎 检查远程目录并收集远程清单...")
-    ensure_dir_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path}"'
+    ensure_dir_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_parent_path}"'
     try:
         run_cmd(ensure_dir_cmd, debug=debug, desc="ensure remote dir", timeout=120, retries=1, retry_delay=1.0,
                 check=True)
@@ -392,14 +381,14 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
         return
 
     # 先做远端空探测：空则直接走压缩上传
-    if is_remote_empty(pod_name, namespace, cluster, remote_path, debug=debug):
+    if is_remote_empty(pod_name, namespace, cluster, remote_parent_path, debug=debug):
         logger.info("远端为空（快速探测），直接压缩上传，无需远端MD5扫描/本地MD5对比...")
         # 复用下面原有“远端为空”压缩上传逻辑：通过构造一个空的 remote_files_md5 进入分支
         remote_files_md5 = {}
         logger.info(f"远程文件数量: {len(remote_files_md5)}")
     else:
         logger.info("获取远程文件 MD5 值...")
-        remote_files_md5 = get_remote_files_md5(pod_name, namespace, cluster, remote_path, debug, exclude_paths)
+        remote_files_md5 = get_remote_files_md5(pod_name, namespace, cluster, remote_parent_path, debug, exclude_paths)
         logger.info(f"远程文件数量: {len(remote_files_md5)}")
 
     # 远端为空：无需本地MD5对比，直接压缩上传
@@ -430,7 +419,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             upload_time = upload_end - upload_start
             logger.success(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
 
-            extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && tar -xzf {remote_tmp_tar} -C {remote_path} && rm -f {remote_tmp_tar}"'
+            extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_parent_path} && tar -xzf {remote_tmp_tar} -C {remote_parent_path} && rm -f {remote_tmp_tar}"'
             logger.info("📦 解压到远程路径（覆盖模式）...")
             extract_start = time.time()
             try:
@@ -499,7 +488,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                     files_skipped += 1
 
             if need_upload:
-                remote_dir = os.path.dirname(os.path.join(remote_path, rel_path))
+                remote_dir = os.path.dirname(os.path.join(remote_parent_path, rel_path))
                 directories_to_create.add(remote_dir)
                 files_to_upload.append((file_path, rel_path))
 
@@ -532,7 +521,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
                 upload_time = upload_end - upload_start
                 logger.success(f"✅ 压缩包上传成功 (耗时: {upload_time:.2f}s)")
 
-                extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && tar -xzf {remote_tmp_tar} -C {remote_path} && rm -f {remote_tmp_tar}"'
+                extract_cmd = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_parent_path} && tar -xzf {remote_tmp_tar} -C {remote_parent_path} && rm -f {remote_tmp_tar}"'
                 logger.info("📦 解压到远程路径（覆盖模式）...")
                 extract_start = time.time()
                 run_cmd(extract_cmd, debug=debug, desc="extract archive", timeout=1800, retries=0, check=True)
@@ -603,7 +592,7 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
             file_size = os.path.getsize(file_path)
             size_str = format_file_size(file_size)
             logger.info(f"📤 上传文件: {rel_path} ({size_str})")
-            command = f'tess kubectl --cluster {cluster} -n {namespace} cp {file_path} {pod_name}:{os.path.join(remote_path, rel_path)}'
+            command = f'tess kubectl --cluster {cluster} -n {namespace} cp {file_path} {pod_name}:{os.path.join(remote_parent_path, rel_path)}'
 
             # 重试机制
             max_retries = 3
@@ -687,12 +676,12 @@ def upload_initial_files(local_path, namespace, pod_name, remote_path, cluster, 
 class FileChangeHandler(FileSystemEventHandler):
     """处理文件变更事件的监听器"""
 
-    def __init__(self, local_path, namespace, pod_name, remote_path, cluster, executor, debug=False,
+    def __init__(self, local_path, namespace, pod_name, remote_parent_path, cluster, executor, debug=False,
                  show_concurrency=False, exclude_paths=None, debounce_seconds=1.0):
         self.local_path = local_path
         self.namespace = namespace
         self.pod_name = pod_name
-        self.remote_path = remote_path
+        self.remote_parent_path = remote_parent_path
         self.cluster = cluster
         self.executor = executor
         self.debug = debug
@@ -980,7 +969,7 @@ class FileChangeHandler(FileSystemEventHandler):
             size_str = format_file_size(file_size)
 
             # 确保远程目录存在
-            remote_dir = os.path.dirname(os.path.join(self.remote_path, rel_path))
+            remote_dir = os.path.dirname(os.path.join(self.remote_parent_path, rel_path))
             mkdir_command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} exec {self.pod_name} -- mkdir -p {remote_dir}'
             try:
                 run_cmd(mkdir_command, debug=self.debug, desc=f"mkdir {remote_dir}", timeout=120, retries=1,
@@ -990,7 +979,7 @@ class FileChangeHandler(FileSystemEventHandler):
                 logger.error(f"❌ 创建远程目录失败: {remote_dir}")
 
             # 上传文件
-            command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} cp {file_path} {self.pod_name}:{os.path.join(self.remote_path, rel_path)}'
+            command = f'tess kubectl --cluster {self.cluster} -n {self.namespace} cp {file_path} {self.pod_name}:{os.path.join(self.remote_parent_path, rel_path)}'
 
             # 重试机制（交给 run_cmd 执行）
             max_retries = 3
@@ -1045,7 +1034,7 @@ def init_config(project_name, local_path):
             logger.info(f"📝 local_path: {local_path}")
             logger.info("=" * 60)
             logger.info("\n✨ 使用以下命令开始同步：")
-            logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+            logger.info(f"   sync_local_to_pod --project {project_name}")
             logger.info("=" * 60)
         else:
             logger.info("=" * 60)
@@ -1056,7 +1045,7 @@ def init_config(project_name, local_path):
             logger.info("\n📝 请直接编辑配置文件：")
             logger.info(f"   vim {config_path}")
             logger.info("\n✨ 编辑完成后，使用以下命令开始同步：")
-            logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+            logger.info(f"   sync_local_to_pod --project {project_name}")
             logger.info("=" * 60)
         return
 
@@ -1064,8 +1053,8 @@ def init_config(project_name, local_path):
     example_config = {
         "cluster": "908",
         "namespace": "sdsnushare01-dev",
-        "pod_label": "app=your-app",
-        "remote_path": "/mnt/gfs-develop/workspace",
+        "pod_label": "serviceName=hk-develop",
+        "remote_parent_path": "/mnt/gfs-develop/workspace",
         "local_path": local_path,
         "compress_threshold": 50,
         "max_workers": 10,
@@ -1096,7 +1085,7 @@ def init_config(project_name, local_path):
     logger.info("\n📝 请编辑配置文件，填入正确的参数值：")
     logger.info(f"   vim {config_path}")
     logger.info("\n✨ 编辑完成后，使用以下命令开始同步：")
-    logger.info(f"   python3 {sys.argv[0]} --project {project_name}")
+    logger.info(f"   sync_local_to_pod --project {project_name}")
     logger.info("=" * 60)
 
 
@@ -1112,7 +1101,7 @@ def list_projects():
         logger.info("📋 没有找到任何项目配置")
         logger.info("=" * 60)
         logger.info("\n请先初始化项目配置：")
-        logger.info("  python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
+        logger.info("  sync_local_to_pod --init-config --local-path <本地路径>")
         logger.info("=" * 60)
         return
 
@@ -1128,7 +1117,7 @@ def list_projects():
                     projects.append({
                         'name': project_dir.name,
                         'local_path': config.get('local_path', 'N/A'),
-                        'remote_path': config.get('remote_path', 'N/A'),
+                        'remote_parent_path': config.get('remote_parent_path', 'N/A'),
                         'cluster': config.get('cluster', 'N/A'),
                         'namespace': config.get('namespace', 'N/A')
                     })
@@ -1147,12 +1136,12 @@ def list_projects():
     for i, proj in enumerate(projects, 1):
         logger.info(f"\n{i}. 项目名: {proj['name']}")
         logger.info(f"   本地路径: {proj['local_path']}")
-        logger.info(f"   远程路径: {proj['remote_path']}")
+        logger.info(f"   远程路径: {proj['remote_parent_path']}")
         logger.info(f"   集群: {proj['cluster']}")
         logger.info(f"   命名空间: {proj['namespace']}")
     logger.info("\n" + "=" * 60)
     logger.info("💡 使用以下命令开始同步：")
-    logger.info(f"   python3 {sys.argv[0]} --project <项目名>")
+    logger.info(f"   sync_local_to_pod --project <项目名>")
     logger.info("=" * 60)
 
 
@@ -1165,17 +1154,17 @@ def main():
         epilog="""
 使用示例:
 
-  1. 初始化配置:
-     python3 sync_local_to_pod_optimized.py --init-config --local-path /Users/xchen17/workspace/heketi
+1. 初始化配置:
+sync_local_to_pod --init-config --local-path /Users/xchen17/workspace/heketi
 
-  2. 查看所有项目:
-     python3 sync_local_to_pod_optimized.py --list-projects
+2. 查看所有项目:
+sync_local_to_pod --list-projects
 
-  3. 开始同步:
-     python3 sync_local_to_pod_optimized.py --project heketi
+3. 开始同步:
+sync_local_to_pod --project heketi
 
-  4. 强制全量同步:
-     python3 sync_local_to_pod_optimized.py --project heketi --force
+4. 强制全量同步:
+sync_local_to_pod --project heketi --force
         """
     )
 
@@ -1219,9 +1208,9 @@ def main():
     if not args.project:
         logger.error("❌ 错误: 请指定操作模式")
         logger.info("\n使用说明:")
-        logger.info("  初始化:   python3 sync_local_to_pod_optimized.py --init-config --local-path <本地路径>")
-        logger.info("  查看项目: python3 sync_local_to_pod_optimized.py --list-projects")
-        logger.info("  同步:     python3 sync_local_to_pod_optimized.py --project <项目名>")
+        logger.info("  初始化:   sync_local_to_pod --init-config --local-path <本地路径>")
+        logger.info("  查看项目: sync_local_to_pod --list-projects")
+        logger.info("  同步:    sync_local_to_pod --project <项目名>")
         sys.exit(1)
 
     project_name = args.project
@@ -1253,9 +1242,9 @@ def main():
                 logger.info(f"  - {proj}")
         else:
             logger.info(f"\n没有任何已配置的项目，请先初始化：")
-            logger.info(f"  初始化: python3 {sys.argv[0]} --init-config --local-path <本地路径>")
+            logger.info(f"  初始化: sync_local_to_pod --init-config --local-path <本地路径>")
         logger.info(f"\n使用以下命令查看项目：")
-        logger.info(f"  python3 {sys.argv[0]} --list-projects")
+        logger.info(f"  sync_local_to_pod --list-projects")
         sys.exit(1)
 
     # 加载配置文件
@@ -1270,7 +1259,7 @@ def main():
     skip_verify = args.skip_verify if args.skip_verify else config.get('skip_verify', False)
 
     # 验证必需参数
-    required_fields = ['cluster', 'namespace', 'pod_label', 'remote_path', 'local_path']
+    required_fields = ['cluster', 'namespace', 'pod_label', 'remote_parent_path', 'local_path']
     missing_fields = [field for field in required_fields if not config.get(field)]
 
     if missing_fields:
@@ -1282,8 +1271,9 @@ def main():
     cluster = config['cluster']
     namespace = config['namespace']
     pod_label = config['pod_label']
-    remote_path = config['remote_path']
+    remote_parent_path = config['remote_parent_path']
     local_path = config['local_path']
+    remote_path = os.path.join(remote_parent_path, os.path.basename(local_path))
     exclude_paths = config.get('exclude_paths', [])
     debug = config.get('debug', False)
     max_workers = config.get('max_workers', 10)
@@ -1300,7 +1290,8 @@ def main():
         logger.info(f"集群 (cluster):     {cluster}")
         logger.info(f"命名空间 (namespace): {namespace}")
         logger.info(f"Pod标签 (pod_label): {pod_label}")
-        logger.info(f"远程路径 (remote_path): {remote_path}")
+        logger.info(f"远程路径 (remote_parent_path): {remote_parent_path}")
+        logger.info(f"实际同步目录 (remote_path):    {remote_path}")
         logger.info(f"本地路径 (local_path):  {local_path}")
         logger.info("=" * 60)
         logger.info("⚠️  请仔细核对以上配置，确认无误后按回车继续...")
@@ -1320,8 +1311,8 @@ def main():
         logger.info(f"\n请检查配置文件中的 local_path: {config_path}")
         sys.exit(1)
 
-    if not (cluster and namespace and pod_label and remote_path):
-        logger.error('cluster/namespace/pod_label/remote_path 必填')
+    if not (cluster and namespace and pod_label and remote_parent_path):
+        logger.error('cluster/namespace/pod_label/remote_parent_path 必填')
         sys.exit(1)
 
     # 配置logger（根据debug模式）
@@ -1361,14 +1352,13 @@ def main():
             compressed_size = os.path.getsize(tar_path)
             logger.success(f'✅ 压缩完成: {format_file_size(compressed_size)} (耗时: {compress_time:.2f}s)')
 
-            # 计算 remote_path 的父目录
-            remote_parent = os.path.dirname(remote_path)
-            remote_tar_path = os.path.join(remote_parent, 'sync_upload.tar.gz')
+            # 计算 remote_parent_path 的父目录
+            remote_tar_path = os.path.join(remote_parent_path, 'sync_upload.tar.gz')
 
             # 优化：合并多个 kubectl exec 命令减少 IO
             cmd_cp = f'tess kubectl --cluster {cluster} -n {namespace} cp {tar_path} {pod_name}:{remote_tar_path}'
             # 合并清空、解压、删除为一次 kubectl exec 调用
-            cmd_extract = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "rm -rf {remote_path}/* && tar -xzf {remote_tar_path} -C {remote_path} && rm {remote_tar_path}"'
+            cmd_extract = f'tess kubectl --cluster {cluster} -n {namespace} exec {pod_name} -- bash -c "mkdir -p {remote_path} && rm -rf {remote_path}/* && tar -xzf {remote_tar_path} -C {remote_path} && rm {remote_tar_path}"'
 
             if debug:
                 logger.debug(f'上传压缩包命令: {cmd_cp}')
