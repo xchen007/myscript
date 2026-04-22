@@ -160,53 +160,79 @@ DEFAULT_POLL_INTERVAL = 3  # 秒
 FSWATCH_DEBOUNCE = 1.0    # 秒，合并短时间内的多次变更
 
 
+def _roots_ok(source_dir: Path, target_dir: Path) -> bool:
+    """同步前校验两个根目录是否存在，任一缺失则拒绝触发同步。"""
+    if not source_dir.is_dir():
+        logger.error(f"🚫 源目录根目录不存在，跳过本次同步: {source_dir}")
+        return False
+    if not target_dir.is_dir():
+        logger.warning(
+            f"🚫 目标目录根目录不存在，跳过本次同步（保护源目录不被清空）: {target_dir}"
+        )
+        return False
+    return True
+
+
 def do_watch_sync(
     unison: str,
     source_dir: Path,
     target_dir: Path,
     dry_run: bool,
     interval: int = DEFAULT_POLL_INTERVAL,
+    nodeletion_source: bool = False,
 ) -> None:
     """持续双向监控同步（阻塞直到用户中断）。
 
     优先级：
-      1. unison -repeat watch（依赖 unison-fsmonitor，实时）
-      2. fswatch + unison 触发（实时，macOS 原生 FSEvents）
-      3. unison -repeat <N>（轮询，兜底）
+      1. fswatch + unison 触发（实时，macOS 原生 FSEvents）
+      2. 自管理轮询循环（兜底）
+
+    注意：不再使用 unison -repeat，改为自管理循环，以便在每次同步前
+    执行根目录存在性校验，防止根目录被删除时误清空对端文件。
     """
     if dry_run:
         logger.info("[dry-run] 跳过监控模式启动")
         return
 
     logger.info(f"👀 启动双向监控: {source_dir} ↔ {target_dir}（Ctrl+C 退出）")
+    logger.info("🔒 根目录保护已启用：任一根目录消失时自动跳过同步")
 
-    # 1. 先尝试 unison 原生 watch 模式
-    rc, stderr = run_unison(
-        unison,
-        source_dir,
-        target_dir,
-        extra_args=["-repeat", "watch"],
-        capture_stderr=True,
-    )
-    if not (rc != 0 and "No file monitoring helper" in (stderr or "")):
-        return  # 成功退出或非 fsmonitor 错误，直接返回
+    # -nodeletion <source> 防止目标侧的删除操作反向传播到源目录
+    protection_args = ["-nodeletion", str(source_dir)] if nodeletion_source else []
+    if nodeletion_source:
+        logger.info("🛡  源目录保护已开启：目标侧删除不会影响源目录")
 
-    # 2. 尝试 fswatch 实时监控
+    # 1. 优先使用 fswatch 实时监控
     fswatch_bin = shutil.which("fswatch")
     if fswatch_bin:
-        logger.info(f"✅ 使用 fswatch 实时监控（FSEvents）")
-        _watch_with_fswatch(unison, fswatch_bin, source_dir, target_dir)
+        logger.info("✅ 使用 fswatch 实时监控（FSEvents）")
+        _watch_with_fswatch(unison, fswatch_bin, source_dir, target_dir,
+                            extra_args=protection_args)
         return
 
-    # 3. 兜底：轮询模式
+    # 2. 兜底：自管理轮询循环
     logger.warning(f"⚠️  fswatch 未找到，降级到轮询模式（每 {interval} 秒检测一次）")
     logger.info("提示: brew install fswatch 可获得实时监控")
-    run_unison(
-        unison,
-        source_dir,
-        target_dir,
-        extra_args=["-repeat", str(interval)],
-    )
+    _watch_poll(unison, source_dir, target_dir, interval, extra_args=protection_args)
+
+
+def _watch_poll(
+    unison: str,
+    source_dir: Path,
+    target_dir: Path,
+    interval: int,
+    extra_args: list | None = None,
+) -> None:
+    """自管理轮询循环：每隔 interval 秒校验根目录后执行一次 unison 同步。"""
+    extra_args = extra_args or []
+    while True:
+        time.sleep(interval)
+        if not _roots_ok(source_dir, target_dir):
+            continue
+        logger.debug("🔄 轮询触发同步")
+        rc, _ = run_unison(unison, source_dir, target_dir, extra_args=extra_args)
+        if rc == 2:
+            logger.error("❌ 同步失败")
 
 
 def _watch_with_fswatch(
@@ -214,8 +240,10 @@ def _watch_with_fswatch(
     fswatch_bin: str,
     source_dir: Path,
     target_dir: Path,
+    extra_args: list | None = None,
 ) -> None:
     """用 fswatch 监听文件变化，防抖后触发 unison 双向同步。"""
+    extra_args = extra_args or []
     sync_lock = threading.Lock()
     pending = threading.Event()
     stop_event = threading.Event()
@@ -231,8 +259,11 @@ def _watch_with_fswatch(
             if pending.is_set():
                 continue
             with sync_lock:
+                if not _roots_ok(source_dir, target_dir):
+                    continue
                 logger.debug("🔄 检测到变更，触发同步")
-                rc, _ = run_unison(unison, source_dir, target_dir, extra_args=[])
+                rc, _ = run_unison(unison, source_dir, target_dir,
+                                   extra_args=extra_args)
                 if rc == 2:
                     logger.error("❌ 同步失败")
 
@@ -316,6 +347,11 @@ def parse_args() -> argparse.Namespace:
         help="显示详细日志（包含执行的命令）",
     )
     parser.add_argument(
+        "--nodeletion-source",
+        action="store_true",
+        help="监控模式下保护源目录：目标侧的删除不会反向同步到源目录（推荐开启）",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=DEFAULT_POLL_INTERVAL,
@@ -380,7 +416,9 @@ def main() -> None:
         logger.info("ℹ️  首次同步已完成，直接进入监控模式（使用 --reset 重新触发首次同步）")
 
     # 6. 持续双向监控
-    do_watch_sync(unison, source_dir, target_dir, args.dry_run, interval=args.interval)
+    do_watch_sync(unison, source_dir, target_dir, args.dry_run,
+                  interval=args.interval,
+                  nodeletion_source=args.nodeletion_source)
 
 
 if __name__ == "__main__":
