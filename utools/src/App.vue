@@ -22,7 +22,7 @@ import JiratoolsPanel from './components/jiratools/JiratoolsPanel.vue'
 import Sync2podPanel  from './components/sync2pod/Sync2podPanel.vue'
 
 const activeTool = ref('bisync')
-const isReady = ref(true)
+const isReady = ref(window.myscriptAPI?.isReady() ?? false)
 
 const CODE_TO_TOOL = {
   myscript:        'bisync',
