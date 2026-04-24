@@ -1,0 +1,29 @@
+{
+  "pluginName": "MyScript Tools",
+  "description": "CLI tools GUI: bisync, jira-analyzer, sync2pod",
+  "main": "dist/index.html",
+  "logo": "logo.png",
+  "preload": "preload.js",
+  "features": [
+    {
+      "code": "myscript",
+      "explain": "MyScript Tools — open main panel",
+      "cmds": ["myscript"]
+    },
+    {
+      "code": "bisync",
+      "explain": "bisync — bidirectional file sync (Unison)",
+      "cmds": ["bisync"]
+    },
+    {
+      "code": "jiratools",
+      "explain": "jira-analyzer — JIRA sprint worklog analyzer",
+      "cmds": ["jiratools", "jira-analyzer"]
+    },
+    {
+      "code": "sync2pod",
+      "explain": "sync2pod — sync local files to Kubernetes pod",
+      "cmds": ["sync2pod"]
+    }
+  ]
+}
