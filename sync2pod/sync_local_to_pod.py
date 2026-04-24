@@ -837,12 +837,24 @@ def compress_and_upload(
         )
         run_cmd(exec_cmd(cfg, pod_name, extract_script), debug=cfg.debug, desc=f"{label} stage extract", timeout=1800)
 
-        switch_script = (
-            f"rm -rf {shlex.quote(remote_backup)} && "
-            f"if [ -e {shlex.quote(cfg.remote_path)} ]; then mv {shlex.quote(cfg.remote_path)} {shlex.quote(remote_backup)}; fi && "
-            f"mv {shlex.quote(remote_stage)} {shlex.quote(cfg.remote_path)} && "
-            f"rm -rf {shlex.quote(remote_backup)}"
-        )
+        if label == "forced-full":
+            # In forced-full mode: delete all files in remote_path (not the directory itself),
+            # ignore errors for non-existent files, then recreate the directory
+            switch_script = (
+                f"rm -rf {shlex.quote(remote_backup)} && "
+                f"if [ -d {shlex.quote(cfg.remote_path)} ]; then rm -rf {shlex.quote(cfg.remote_path)}/* 2>/dev/null || true; fi && "
+                f"mkdir -p {shlex.quote(cfg.remote_path)} && "
+                f"mv {shlex.quote(remote_stage)}/* {shlex.quote(cfg.remote_path)}/ && "
+                f"rm -rf {shlex.quote(remote_stage)} {shlex.quote(remote_backup)}"
+            )
+        else:
+            # In normal mode: move staging dir to replace the entire remote_path directory
+            switch_script = (
+                f"rm -rf {shlex.quote(remote_backup)} && "
+                f"if [ -e {shlex.quote(cfg.remote_path)} ]; then mv {shlex.quote(cfg.remote_path)} {shlex.quote(remote_backup)}; fi && "
+                f"mv {shlex.quote(remote_stage)} {shlex.quote(cfg.remote_path)} && "
+                f"rm -rf {shlex.quote(remote_backup)}"
+            )
         run_cmd(exec_cmd(cfg, pod_name, switch_script), debug=cfg.debug, desc=f"{label} stage switch", timeout=600)
         extract_time = time.time() - extract_start
         logger.success(f"stage extract + switch done ({extract_time:.2f}s)")
@@ -1161,6 +1173,10 @@ class FileChangeHandler(FileSystemEventHandler):
 
             if not _wait_for_file_stable(file_path):
                 logger.warning(f"file did not become stable in time, skipping this round: {rel}")
+                # File was unstable or disappeared during stability check.
+                # Clear the desired action so next modification event can retry fresh.
+                # This prevents accidental deletion of remote files due to editor temporary deletions.
+                self._clear_desired_action_if_matches(file_path, "upload", False)
                 return
 
             remote_dir = os.path.dirname(os.path.join(self.cfg.remote_path, rel))
@@ -1170,6 +1186,8 @@ class FileChangeHandler(FileSystemEventHandler):
             if desired != ("upload", False):
                 return
             if not os.path.exists(file_path):
+                # File vanished after stability check confirmed it exists.
+                # This is a genuine deletion that should be synced to remote.
                 self._set_desired_action(file_path, "delete", False)
                 return
 

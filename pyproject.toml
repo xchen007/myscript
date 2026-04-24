@@ -1,0 +1,22 @@
+[project]
+name = "myscript"
+version = "0.1.0"
+description = "Personal productivity CLI tools: bisync, jiratools, sync2pod"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "loguru>=0.7",
+    "watchdog>=4.0",
+]
+
+[project.scripts]
+bisync        = "bisync.bisync:main"
+jira-analyzer = "jiratools.jira_analyzer:main"
+sync2pod      = "sync2pod.sync_local_to_pod:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bisync*", "jiratools*", "sync2pod*"]
