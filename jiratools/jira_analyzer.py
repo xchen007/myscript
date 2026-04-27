@@ -4,16 +4,17 @@ JIRA Sprint Analyzer - Analyze sprint worklog and statistics
 """
 
 import argparse
-import configparser
 import json
 import re
-import subprocess
 import sys
 import os
-import shlex
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from collections import defaultdict
+
+from utils.shell import run_local_cmd, test_binary
+from utils.display import display_width, make_hyperlink, print_table
+from utils.concurrent import run_concurrent
 
 
 def parse_jira_datetime(date_str: str) -> Optional[datetime]:
@@ -42,127 +43,40 @@ def classify_week(dt: datetime) -> str:
     return target.strftime('%Y-%m-%d')
 
 
-def display_width(s: str) -> int:
-    """Calculate display width accounting for CJK double-width characters"""
-    width = 0
-    for ch in s:
-        cp = ord(ch)
-        if (0x1100 <= cp <= 0x115F or
-                0x2E80 <= cp <= 0x303E or
-                0x3041 <= cp <= 0xA4CF or
-                0xAC00 <= cp <= 0xD7AF or
-                0xF900 <= cp <= 0xFAFF or
-                0xFE10 <= cp <= 0xFE1F or
-                0xFE30 <= cp <= 0xFE4F or
-                0xFF00 <= cp <= 0xFF60 or
-                0xFFE0 <= cp <= 0xFFE6):
-            width += 2
-        else:
-            width += 1
-    return width
-
-
-def pad_cell(s: str, width: int) -> str:
-    """Left-pad string to display width, accounting for wide characters"""
-    return s + ' ' * max(0, width - display_width(s))
-
-
-def make_hyperlink(text: str, url: str) -> str:
-    """Wrap text in OSC 8 terminal hyperlink escape sequence"""
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
-
-
-def print_table(headers: List[str], rows: List[List[str]], title: str = "",
-                col_overrides: Dict[int, int] = None,
-                cell_formatters: Dict[int, Any] = None):
-    """Print a formatted ASCII table with CJK-aware column widths.
-    col_overrides:    {col_index: forced_width}
-    cell_formatters:  {col_index: fn(raw_cell) -> formatted_str}
-                      Formatters may add invisible escape codes; width is
-                      always calculated from the raw cell value.
-    """
-    if not rows:
-        return
-
-    # Calculate column widths using display_width (from raw cell values)
-    col_widths = []
-    for i, header in enumerate(headers):
-        max_width = display_width(header)
-        for row in rows:
-            if i < len(row):
-                max_width = max(max_width, display_width(str(row[i])))
-        col_widths.append(max_width)
-
-    # Apply any forced overrides
-    if col_overrides:
-        for idx, width in col_overrides.items():
-            if 0 <= idx < len(col_widths):
-                col_widths[idx] = width
-
-    # Print title if provided
-    if title:
-        print(f"\n{title}")
-
-    sep_width = sum(col_widths) + len(headers) * 3 - 1
-
-    # Print header
-    header_row = " │ ".join(pad_cell(h, col_widths[i]) for i, h in enumerate(headers))
-    print(f" {header_row} ")
-    print("─" * sep_width)
-
-    # Print rows — apply cell_formatters AFTER padding calculation
-    for row in rows:
-        cells = []
-        for i in range(len(headers)):
-            raw = str(row[i]) if i < len(row) else ''
-            padding = ' ' * max(0, col_widths[i] - display_width(raw))
-            if cell_formatters and i in cell_formatters:
-                cells.append(cell_formatters[i](raw) + padding)
-            else:
-                cells.append(raw + padding)
-        print(f" {' │ '.join(cells)} ")
-
-    print()
+def _adf_to_text(node: Any) -> str:
+    """Recursively extract plain text from an Atlassian Document Format (ADF) node."""
+    if not isinstance(node, dict):
+        return node if isinstance(node, str) else ''
+    ntype = node.get('type', '')
+    if ntype == 'text':
+        return node.get('text', '')
+    if ntype == 'hardBreak':
+        return '\n'
+    if ntype == 'mention':
+        return node.get('attrs', {}).get('text', '')
+    text = ''.join(_adf_to_text(c) for c in node.get('content', []))
+    if ntype in ('paragraph', 'heading'):
+        return text + '\n'
+    if ntype == 'listItem':
+        return '• ' + text.rstrip('\n') + '\n'
+    return text
 
 
 class JiraAnalyzer:
-    CONFIG_FILE = os.path.expanduser('~/.my_jira_config')
-    
-    def __init__(self, user: str, label: str, jira_url: str = None,
-                 show_report: bool = False):
+    def __init__(self, user: str, label: str, jira_bin: str,
+                 jira_url: str = None, show_report: bool = False,
+                 show_json: bool = False):
         self.user = user
         self.label = label
+        self.jira_bin = jira_bin
         self.jira_url = jira_url.rstrip('/') if jira_url else None
         self.show_report = show_report
-        self.jira_bin = self._find_jira_bin()
+        self.show_json = show_json
         self.tickets = []
 
-    @staticmethod
-    def _find_jira_bin() -> str:
-        """Locate the jira_cli binary via PATH. Returns full path or 'jira_cli' as fallback."""
-        import shutil
-        found = shutil.which('jira_cli')
-        if found:
-            return found
-        return 'jira_cli'
-
-    @classmethod
-    def load_config(cls) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """Load configuration from ~/.my_jira_config"""
-        if not os.path.exists(cls.CONFIG_FILE):
-            return None, None, None
-        
-        try:
-            config = configparser.ConfigParser()
-            config.read(cls.CONFIG_FILE)
-            
-            user = config.get('jira', 'user', fallback=None)
-            label = config.get('jira', 'label', fallback=None)
-            jira_url = config.get('jira', 'jira_url', fallback=None)
-            return user, label, jira_url
-        except Exception as e:
-            print(f"⚠️  Error reading config file: {e}", file=sys.stderr)
-            return None, None, None
+    def test_connection(self) -> bool:
+        """Test whether the configured jira_bin is callable."""
+        return test_binary(self.jira_bin)
 
     # Error messages that indicate "no data" rather than a real failure
     NO_RESULT_PATTERNS = ['No result found', 'no result found']
@@ -170,17 +84,13 @@ class JiraAnalyzer:
     def run_command(self, cmd: str, retry_count: int = 3) -> Optional[str]:
         """Execute jira CLI command with retry mechanism.
         Returns None on real failure, '' (empty string) when no results found."""
-        # Use login shell for PATH + source ~/.zshrc for env vars (JIRA_API_TOKEN etc.)
-        shell_path = os.environ.get('SHELL', '/bin/zsh')
-        wrapped_cmd = f"{shell_path} -l -c 'source ~/.zshrc >/dev/null 2>&1; {cmd}'"
         for attempt in range(retry_count):
             try:
-                result = subprocess.run(
-                    wrapped_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
+                result = run_local_cmd(
+                    cmd,
+                    use_login_shell=True,
+                    timeout=30,
+                    check=False,
                 )
                 if result.returncode == 0:
                     return result.stdout.strip()
@@ -195,11 +105,6 @@ class JiraAnalyzer:
                     print(f"   Error: {stderr}", file=sys.stderr)
                 else:
                     print(f"⚠️  Retry attempt {attempt + 1}/{retry_count} for: {cmd}", file=sys.stderr)
-            except subprocess.TimeoutExpired:
-                if attempt == retry_count - 1:
-                    print(f"❌ Command timeout after {retry_count} attempts: {cmd}", file=sys.stderr)
-                else:
-                    print(f"⚠️  Timeout, retrying ({attempt + 1}/{retry_count})...", file=sys.stderr)
             except Exception as e:
                 if attempt == retry_count - 1:
                     print(f"❌ Error executing command: {e}", file=sys.stderr)
@@ -277,43 +182,93 @@ class JiraAnalyzer:
 
         return classify_week(dt) if dt else ''
 
+    def _parse_ticket_details(self, ticket: str, details: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Parse raw JIRA issue JSON into a normalised ticket dict."""
+        try:
+            fields = details.get('fields', {})
+
+            raw_desc = fields.get('description')
+            if isinstance(raw_desc, dict):
+                description = _adf_to_text(raw_desc).strip()
+            elif isinstance(raw_desc, str):
+                description = raw_desc.strip()
+            else:
+                description = ''
+
+            assignee_field = fields.get('assignee') or {}
+            assignee = assignee_field.get('displayName') or assignee_field.get('name') or ''
+
+            points = None
+            for sp_field in ('story_points', 'customfield_10016', 'customfield_10028', 'customfield_10004'):
+                val = fields.get(sp_field)
+                if val is not None:
+                    try:
+                        points = float(val)
+                        break
+                    except (TypeError, ValueError):
+                        pass
+
+            # Collect per-worklog entries with date (for daily chart)
+            worklog_entries = []
+            for wl in fields.get('worklog', {}).get('worklogs', []):
+                started = wl.get('started', '')
+                seconds = wl.get('timeSpentSeconds', 0)
+                if started and seconds:
+                    worklog_entries.append({'date': started[:10], 'seconds': seconds})
+
+            return {
+                'key': ticket,
+                'type': fields.get('issuetype', {}).get('name', 'N/A'),
+                'status': fields.get('status', {}).get('name', 'N/A'),
+                'priority': fields.get('priority', {}).get('name', 'N/A'),
+                'summary': fields.get('summary', 'N/A'),
+                'description': description,
+                'assignee': assignee,
+                'points': points,
+                'estimated_time': (fields.get('timeoriginalestimate') or 0) / 3600,
+                'log_time': self.extract_worklog_time(details),
+                'done_label': self._extract_done_label(fields),
+                'worklog_entries': worklog_entries,
+            }
+        except Exception as e:
+            print(f"⚠️  Error processing ticket {ticket}: {e}", file=sys.stderr)
+            return None
+
+    def _fetch_and_parse(self, ticket: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single ticket's details and parse them (thread-safe)."""
+        details = self.fetch_ticket_details(ticket)
+        if not details:
+            return None
+        return self._parse_ticket_details(ticket, details)
+
     def process_tickets(self, tickets: List[str]):
-        """Process each ticket and collect data"""
+        """Process each ticket concurrently and collect data"""
         print(f"🔍 Step 2: Fetching details for {len(tickets)} tickets...", file=sys.stderr)
-        
-        for idx, ticket in enumerate(tickets, 1):
-            if idx % 50 == 1 or idx == len(tickets):
-                print(f"  [{idx}/{len(tickets)}] {ticket}", file=sys.stderr)
-            
-            details = self.fetch_ticket_details(ticket)
-            if not details:
-                continue
-            
-            try:
-                fields = details.get('fields', {})
-                
-                ticket_info = {
-                    'key': ticket,
-                    'type': fields.get('issuetype', {}).get('name', 'N/A'),
-                    'status': fields.get('status', {}).get('name', 'N/A'),
-                    'priority': fields.get('priority', {}).get('name', 'N/A'),
-                    'summary': fields.get('summary', 'N/A'),
-                    'estimated_time': (fields.get('timeoriginalestimate') or 0) / 3600,
-                    'log_time': self.extract_worklog_time(details),
-                    'done_label': self._extract_done_label(fields),
-                }
-                
-                self.tickets.append(ticket_info)
-                    
-            except Exception as e:
-                print(f"⚠️  Error processing ticket {ticket}: {e}", file=sys.stderr)
-                continue
-        
+
+        def on_progress(completed: int, total: int, ticket: str):
+            if completed == 1 or completed == total:
+                print(f"  [{completed}/{total}] {ticket}", file=sys.stderr)
+
+        results = run_concurrent(
+            tickets,
+            self._fetch_and_parse,
+            max_workers=5,
+            progress=on_progress,
+        )
+
+        self.tickets = [r for r in results if r is not None]
         print(f"✓ Processed {len(self.tickets)} tickets successfully", file=sys.stderr)
 
     # Sort order definitions
     TYPE_ORDER = {'Epic': 0, 'Story': 1, 'Task': 2, 'Sub-task': 3, 'Bug': 4}
     STATUS_ORDER = {'Open': 0, 'In Progress': 1, 'In Review': 2, 'Resolved': 3, 'Closed': 4}
+    PRIORITY_ORDER = {
+        'Blocker': 0, 'Critical': 1, 'Highest': 1,
+        'High': 2, 'Major': 2,
+        'Medium': 3, 'Normal': 3,
+        'Minor': 4, 'Low': 4,
+        'Trivial': 5, 'Lowest': 5,
+    }
 
     def _ticket_sort_key(self, ticket: Dict[str, Any]) -> tuple:
         """Sort by: type > status > ticket number"""
@@ -324,8 +279,83 @@ class JiraAnalyzer:
         ticket_num = int(key_parts[1]) if len(key_parts) == 2 and key_parts[1].isdigit() else 0
         return (type_rank, status_rank, ticket_num)
 
+    def generate_json_output(self):
+        """Output structured JSON for GUI consumption.
+
+        Emits a single sentinel line to stdout:
+          __SPRINT_TABLE_JSON__:<json>
+        All progress messages continue to go to stderr.
+        """
+        sorted_tickets = sorted(self.tickets, key=self._ticket_sort_key)
+
+        tickets_data = []
+        for t in sorted_tickets:
+            url = f"{self.jira_url}/browse/{t['key']}" if self.jira_url else None
+            tickets_data.append({
+                'key': t['key'],
+                'type': t['type'],
+                'type_rank': self.TYPE_ORDER.get(t['type'], 99),
+                'status': t['status'],
+                'status_rank': self.STATUS_ORDER.get(t['status'], 99),
+                'priority': t['priority'],
+                'priority_rank': self.PRIORITY_ORDER.get(t['priority'], 99),
+                'summary': t['summary'],
+                'description': t.get('description', ''),
+                'assignee': t.get('assignee', ''),
+                'points': t.get('points'),
+                'estimated_seconds': int((t.get('estimated_time', 0) or 0) * 3600),
+                'log_seconds': int((t.get('log_time', 0) or 0) * 3600),
+                'done_label': t.get('done_label', ''),
+                'url': url,
+            })
+
+        total_log_seconds = sum(t['log_seconds'] for t in tickets_data)
+        n = len(tickets_data)
+
+        week_summary: Dict[str, int] = defaultdict(int)
+        status_counts: Dict[str, int] = defaultdict(int)
+        type_counts: Dict[str, int] = defaultdict(int)
+        for t in tickets_data:
+            if t['done_label']:
+                week_summary[t['done_label']] += 1
+            status_counts[t['status']] += 1
+            type_counts[t['type']] += 1
+
+        total_points = sum((t.get('points') or 0) for t in tickets_data)
+
+        # Aggregate worklog entries by date across all tickets
+        daily_log_agg: Dict[str, int] = defaultdict(int)
+        for t in self.tickets:
+            for entry in t.get('worklog_entries', []):
+                daily_log_agg[entry['date']] += entry['seconds']
+        daily_log = [{'date': d, 'seconds': s} for d, s in sorted(daily_log_agg.items())]
+
+        stats = {
+            'total_tickets': n,
+            'total_log_seconds': total_log_seconds,
+            'avg_log_seconds': total_log_seconds // n if n else 0,
+            'total_points': total_points,
+            'week_summary': dict(sorted(week_summary.items())),
+            'status_counts': dict(status_counts),
+            'type_counts': dict(type_counts),
+        }
+
+        meta = {
+            'user': self.user,
+            'label': self.label,
+            'generated_at': datetime.now().isoformat(),
+            'schema_version': 1,
+        }
+
+        payload = {'tickets': tickets_data, 'stats': stats, 'meta': meta, 'daily_log': daily_log}
+        print(f"__SPRINT_TABLE_JSON__:{json.dumps(payload, ensure_ascii=False)}", flush=True)
+
     def generate_report(self):
         """Generate report with formatted tables"""
+        if self.show_json:
+            self.generate_json_output()
+            return
+
         # Header
         print("\n" + "="*80)
         print("# JIRA Sprint 分析报告".center(80))
@@ -433,6 +463,8 @@ class JiraAnalyzer:
             # Fetch and process tickets
             tickets = self.fetch_ticket_list()
             if not tickets:
+                if self.show_json:
+                    self.generate_json_output()  # emit empty JSON so GUI knows run completed
                 return  # message already printed in fetch_ticket_list
             
             self.process_tickets(tickets)
@@ -449,41 +481,41 @@ class JiraAnalyzer:
 
 
 def main():
-    # Load config file first
-    config_user, config_label, config_jira_url = JiraAnalyzer.load_config()
-    
     parser = argparse.ArgumentParser(
         description='Analyze JIRA sprint worklog and statistics',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Configuration:
-  Settings can be loaded from ~/.my_jira_config:
-    [jira]
-    user = xchen17
-    label = SDS-CP-Sprint08-2026
-    jira_url = https://jirap.corp.ebay.com
-
 Examples:
-  # Use config file values (summary only)
-  python jira_analyzer.py
-  
+  # Run with all required arguments
+  jira-analyzer --jira-bin /path/to/jira_cli -u xchen17 -l SDS-CP-Sprint08-2026
+
+  # Test jira command connectivity
+  jira-analyzer --jira-bin /path/to/jira_cli --test
+
   # Show sprint report table
-  python jira_analyzer.py -r
-  
-  # Show everything (summary + report)
-  python jira_analyzer.py --all
+  jira-analyzer --jira-bin /path/to/jira_cli -u xchen17 -l SDS-CP-Sprint08-2026 -r
+
+  # Output JSON for GUI
+  jira-analyzer --jira-bin /path/to/jira_cli -u xchen17 -l SDS-CP-Sprint08-2026 --json
         """
     )
-    
+
+    parser.add_argument(
+        '--jira-bin',
+        required=True,
+        help='Path to the jira CLI binary'
+    )
     parser.add_argument(
         '-u', '--user',
-        default=config_user,
-        help=f'JIRA assignee username (default from config: {config_user or "not set"})'
+        help='JIRA assignee username'
     )
     parser.add_argument(
         '-l', '--label',
-        default=config_label,
-        help=f'JIRA label to filter tickets (default from config: {config_label or "not set"})'
+        help='JIRA label to filter tickets'
+    )
+    parser.add_argument(
+        '--jira-url',
+        help='JIRA instance base URL (e.g. https://jirap.corp.ebay.com)'
     )
     parser.add_argument(
         '-r', '--report',
@@ -495,31 +527,41 @@ Examples:
         action='store_true',
         help='Show all information (equivalent to -r)'
     )
+    parser.add_argument(
+        '-j', '--json',
+        action='store_true',
+        help='Output structured JSON for GUI consumption (suppresses text tables)'
+    )
+    parser.add_argument(
+        '--test',
+        action='store_true',
+        help='Test whether the jira CLI command is reachable and exit'
+    )
 
     args = parser.parse_args()
 
     # --all enables every section
     if args.all:
         args.report = True
-    
-    # Validate required parameters
+
+    # --test mode: verify command and exit
+    if args.test:
+        analyzer = JiraAnalyzer(user='_test_', label='_test_', jira_bin=args.jira_bin)
+        sys.exit(0 if analyzer.test_connection() else 1)
+
+    # Validate required parameters for normal run
     if not args.user or not args.label:
         print("❌ Error: Both --user and --label are required", file=sys.stderr)
-        if not config_user or not config_label:
-            print("\nConfiguration file ~/.my_jira_config not found or incomplete.", file=sys.stderr)
-            print("Please create it with the following content:\n", file=sys.stderr)
-            print("  [jira]", file=sys.stderr)
-            print("  user = your_username", file=sys.stderr)
-            print("  label = your_label", file=sys.stderr)
-            print("  jira_url = https://your-jira-instance.com", file=sys.stderr)
         parser.print_help(file=sys.stderr)
         sys.exit(1)
-    
+
     analyzer = JiraAnalyzer(
         user=args.user,
         label=args.label,
-        jira_url=config_jira_url,
-        show_report=args.report
+        jira_bin=args.jira_bin,
+        jira_url=args.jira_url,
+        show_report=args.report,
+        show_json=args.json,
     )
     analyzer.run()
 

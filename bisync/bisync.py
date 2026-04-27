@@ -22,24 +22,13 @@ from pathlib import Path
 
 from loguru import logger
 
+from utils.log import setup_logging
+
 
 # ========== 常量 ==========
 
 UNISON_BIN = os.environ.get("UNISON_BIN", "unison")
 STATE_DIR = Path.home() / ".bisync"
-
-
-# ========== 日志配置 ==========
-
-def setup_logging(verbose: bool = False) -> None:
-    logger.remove()
-    level = "DEBUG" if verbose else "INFO"
-    logger.add(
-        sys.stderr,
-        level=level,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
-        colorize=True,
-    )
 
 
 # ========== 状态文件 ==========

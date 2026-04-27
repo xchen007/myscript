@@ -7,7 +7,11 @@
         ⚠️ Project root not found. Run <code>make install</code> inside the myscript directory.
       </div>
 
-      <RouterView />
+      <RouterView v-slot="{ Component }">
+        <KeepAlive>
+          <component :is="Component" />
+        </KeepAlive>
+      </RouterView>
     </main>
   </div>
 </template>
@@ -27,11 +31,13 @@ const ROUTE_TO_TOOL = {
   '/bisync':   'bisync',
   '/jira':     'jiratools',
   '/sync2pod': 'sync2pod',
+  '/settings': 'settings',
 }
 const TOOL_TO_ROUTE = {
   bisync:    '/bisync',
   jiratools: '/jira',
   sync2pod:  '/sync2pod',
+  settings:  '/settings',
 }
 const CODE_TO_ROUTE = {
   myscript:        '/bisync',

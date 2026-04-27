@@ -30,6 +30,9 @@ from loguru import logger
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from utils.shell import run_local_cmd, cmd_repr
+from utils.log import setup_logging
+
 DEFAULT_COMPRESS_THRESHOLD = 100
 DEFAULT_UPLOAD_CHUNK_COUNT = 6
 DEFAULT_TARGET_CHUNK_SIZE_MB = 64
@@ -113,56 +116,7 @@ class SyncPlan:
     would_use_archive: bool
 
 
-def configure_logger(debug: bool = False) -> None:
-    logger.remove()
-    level = "DEBUG" if debug else "INFO"
-    logger.add(sys.stderr, format="{time:HH:mm:ss.SSS} | {level:<8} | {message}", level=level)
 
-
-def _cmd_repr(command: str | list[str]) -> str:
-    return command if isinstance(command, str) else shlex.join(command)
-
-
-def run_cmd(
-    command: str | list[str],
-    *,
-    debug: bool = False,
-    desc: str | None = None,
-    timeout: int = 600,
-    retries: int = 0,
-    retry_delay: float = 1.0,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    if debug:
-        logger.debug(f"[cmd] {desc + ': ' if desc else ''}{_cmd_repr(command)}")
-
-    last_err: Exception | None = None
-    for attempt in range(retries + 1):
-        try:
-            return subprocess.run(
-                command,
-                shell=isinstance(command, str),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=check,
-            )
-        except subprocess.TimeoutExpired as e:
-            last_err = e
-            logger.error(f"command timeout ({timeout}s){' - ' + desc if desc else ''}: {_cmd_repr(command)}")
-        except subprocess.CalledProcessError as e:
-            last_err = e
-            stderr = (e.stderr or "").strip()
-            msg = stderr or f"exit code: {e.returncode}"
-            logger.error(f"command failed{' - ' + desc if desc else ''}: {msg}")
-
-        if attempt < retries:
-            logger.warning(f"retrying ({attempt + 1}/{retries}){' - ' + desc if desc else ''}")
-            time.sleep(retry_delay)
-
-    if last_err:
-        raise last_err
-    raise RuntimeError("unexpected run_cmd state")
 
 
 def kubectl_base(cfg: SyncConfig) -> list[str]:
@@ -187,7 +141,7 @@ def select_running_pod_by_label(cfg: SyncConfig) -> str:
         "-o",
         'jsonpath={.items[0].metadata.name}',
     ]
-    result = run_cmd(cmd, debug=cfg.debug, desc="select running pod", timeout=30, retries=2)
+    result = run_local_cmd(cmd, debug=cfg.debug, desc="select running pod", timeout=30, retries=2)
     pod_name = (result.stdout or "").strip().strip("'\"")
     if not pod_name:
         raise RuntimeError(f"no running pod found (namespace={cfg.namespace}, label={cfg.pod_label})")
@@ -197,7 +151,7 @@ def select_running_pod_by_label(cfg: SyncConfig) -> str:
 def check_remote_capabilities(cfg: SyncConfig, pod_name: str) -> None:
     required = ["bash", "find", "tar", "md5sum"]
     script = "missing=(); for c in " + " ".join(required) + "; do command -v $c >/dev/null 2>&1 || missing+=($c); done; printf '%s\n' \"${missing[@]}\""
-    result = run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="check remote capabilities", timeout=60, check=False)
+    result = run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="check remote capabilities", timeout=60, check=False)
     missing = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
     if missing:
         raise RuntimeError(f"remote pod is missing required commands: {', '.join(missing)}")
@@ -382,13 +336,13 @@ def is_remote_empty(cfg: SyncConfig, pod_name: str) -> bool:
         f'find {shlex.quote(cfg.remote_path)} -mindepth 1 \\( -type f -o -type d \\) -print -quit 2>/dev/null; '
         f'fi'
     )
-    result = run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="probe remote empty", timeout=60, check=False)
+    result = run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="probe remote empty", timeout=60, check=False)
     return not bool((result.stdout or "").strip())
 
 
 def get_remote_files_md5(cfg: SyncConfig, pod_name: str) -> dict[str, str]:
     script = f'find {shlex.quote(cfg.remote_path)} -type f -exec md5sum {{}} \\; 2>/dev/null || true'
-    result = run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="collect remote md5", timeout=600, check=False)
+    result = run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="collect remote md5", timeout=600, check=False)
 
     remote_files: dict[str, str] = {}
     if result.returncode == 0 and result.stdout.strip():
@@ -411,7 +365,7 @@ def get_remote_manifest(cfg: SyncConfig, pod_name: str) -> tuple[set[str], set[s
         f'find {shlex.quote(cfg.remote_path)} -mindepth 1 \\( -type f -o -type d \\) -printf "%y\\t%P\\n" 2>/dev/null; '
         f'fi'
     )
-    result = run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="collect remote manifest", timeout=600, check=False)
+    result = run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="collect remote manifest", timeout=600, check=False)
     files: set[str] = set()
     dirs: set[str] = set()
     for line in (result.stdout or "").splitlines():
@@ -434,7 +388,7 @@ def cleanup_remote_shards(cfg: SyncConfig, pod_name: str, remote_parts: list[str
         return
     script = "rm -f " + " ".join(shlex.quote(p) for p in remote_parts)
     try:
-        run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="cleanup remote shards", timeout=60, check=False)
+        run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc="cleanup remote shards", timeout=60, check=False)
     except Exception:
         pass
 
@@ -509,7 +463,7 @@ def _upload_items_parallel(
 
         cmd = cp_cmd(cfg, item.local_path, pod_name, item.remote_path)
         try:
-            run_cmd(
+            run_local_cmd(
                 cmd,
                 debug=cfg.debug,
                 desc=f"{desc_prefix} {item.display_name}",
@@ -565,7 +519,7 @@ def _mkdir_remote_dirs(cfg: SyncConfig, pod_name: str, remote_dirs: list[str], *
     deduped = sorted(set(remote_dirs))
     script = "mkdir -p " + " ".join(shlex.quote(d) for d in deduped)
     try:
-        run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc=desc, timeout=300, retries=1)
+        run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc=desc, timeout=300, retries=1)
         logger.success(f"remote dirs ensured: {len(deduped)}")
         return True
     except subprocess.CalledProcessError:
@@ -603,7 +557,7 @@ def _delete_remote_path(
     script = f"rm -rf {quoted}" if is_dir else f"rm -f {quoted}"
     desc = f"delete remote {'dir' if is_dir else 'file'} {display_name}"
     try:
-        run_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc=desc, timeout=120, retries=2)
+        run_local_cmd(exec_cmd(cfg, pod_name, script), debug=cfg.debug, desc=desc, timeout=120, retries=2)
         logger.success(f"remote deleted: {display_name}")
         return True
     except subprocess.CalledProcessError:
@@ -797,7 +751,7 @@ def compress_and_upload(
 
         logger.info("verifying remote chunk hashes...")
         md5_script = "for f in " + " ".join(shlex.quote(p) for p in remote_parts) + "; do md5sum $f 2>/dev/null || echo ERROR; done"
-        md5_result = run_cmd(exec_cmd(cfg, pod_name, md5_script), debug=cfg.debug, desc="remote md5", timeout=120, check=False)
+        md5_result = run_local_cmd(exec_cmd(cfg, pod_name, md5_script), debug=cfg.debug, desc="remote md5", timeout=120, check=False)
 
         remote_md5s: dict[int, str] = {}
         for line in md5_result.stdout.strip().splitlines():
@@ -818,11 +772,11 @@ def compress_and_upload(
 
         logger.success("all chunk hashes verified")
 
-        run_cmd(exec_cmd(cfg, pod_name, f"rm -f {shlex.quote(remote_tar)}"), debug=cfg.debug, desc="cleanup remote tar", timeout=60, check=False)
+        run_local_cmd(exec_cmd(cfg, pod_name, f"rm -f {shlex.quote(remote_tar)}"), debug=cfg.debug, desc="cleanup remote tar", timeout=60, check=False)
 
         logger.info("merging remote chunks...")
         merge_start = time.time()
-        run_cmd(exec_cmd(cfg, pod_name, f"cat {' '.join(shlex.quote(p) for p in remote_parts)} > {shlex.quote(remote_tar)}"), debug=cfg.debug, desc="merge chunks", timeout=120)
+        run_local_cmd(exec_cmd(cfg, pod_name, f"cat {' '.join(shlex.quote(p) for p in remote_parts)} > {shlex.quote(remote_tar)}"), debug=cfg.debug, desc="merge chunks", timeout=120)
         logger.success(f"merge done ({time.time() - merge_start:.2f}s)")
 
         cleanup_remote_shards(cfg, pod_name, remote_parts)
@@ -835,7 +789,7 @@ def compress_and_upload(
             f"tar -xzf {shlex.quote(remote_tar)} -C {shlex.quote(remote_stage)} && "
             f"rm -f {shlex.quote(remote_tar)}"
         )
-        run_cmd(exec_cmd(cfg, pod_name, extract_script), debug=cfg.debug, desc=f"{label} stage extract", timeout=1800)
+        run_local_cmd(exec_cmd(cfg, pod_name, extract_script), debug=cfg.debug, desc=f"{label} stage extract", timeout=1800)
 
         if label == "forced-full":
             # In forced-full mode: delete all files in remote_path (not the directory itself),
@@ -855,7 +809,7 @@ def compress_and_upload(
                 f"mv {shlex.quote(remote_stage)} {shlex.quote(cfg.remote_path)} && "
                 f"rm -rf {shlex.quote(remote_backup)}"
             )
-        run_cmd(exec_cmd(cfg, pod_name, switch_script), debug=cfg.debug, desc=f"{label} stage switch", timeout=600)
+        run_local_cmd(exec_cmd(cfg, pod_name, switch_script), debug=cfg.debug, desc=f"{label} stage switch", timeout=600)
         extract_time = time.time() - extract_start
         logger.success(f"stage extract + switch done ({extract_time:.2f}s)")
 
@@ -906,7 +860,7 @@ def upload_initial_files(cfg: SyncConfig, pod_name: str, project_name: str) -> N
     start = time.time()
 
     try:
-        run_cmd(exec_cmd(cfg, pod_name, f"mkdir -p {shlex.quote(cfg.remote_path)}"), debug=cfg.debug, desc="ensure remote dir", timeout=120, retries=1)
+        run_local_cmd(exec_cmd(cfg, pod_name, f"mkdir -p {shlex.quote(cfg.remote_path)}"), debug=cfg.debug, desc="ensure remote dir", timeout=120, retries=1)
     except subprocess.CalledProcessError:
         logger.error("failed to ensure remote dir")
         return
@@ -1337,7 +1291,7 @@ def _run_sync(project_name: str, force_full_sync: bool, skip_verify_flag: bool, 
     if skip_verify_flag:
         cfg.skip_verify = True
 
-    configure_logger(cfg.debug)
+    setup_logging(verbose=cfg.debug, fmt="{time:HH:mm:ss.SSS} | {level:<8} | {message}", colorize=False)
 
     if not cfg.skip_verify and not dry_run:
         logger.info("=" * 60)
@@ -1448,7 +1402,7 @@ Examples:
     parser.add_argument("--dry-run", action="store_true", help="show sync plan without making changes")
     args = parser.parse_args()
 
-    configure_logger(debug=False)
+    setup_logging(verbose=False, fmt="{time:HH:mm:ss.SSS} | {level:<8} | {message}", colorize=False)
 
     if args.list_projects:
         list_projects()

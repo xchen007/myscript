@@ -98,27 +98,14 @@ function stripAnsi(str) {
     .replace(/\x1b./g, '')                             // remaining 2-char escapes
 }
 
-// ── INI parser ────────────────────────────────────────────────────────────────
-// Mirrors Python's configparser so ~/.my_jira_config is read correctly.
-function parseIni(content) {
-  const sections = {}
-  let current = null
-  for (const raw of content.split('\n')) {
-    const line = raw.trim()
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const sectionMatch = line.match(/^\[(.+)\]$/)
-    if (sectionMatch) {
-      current = sectionMatch[1]
-      sections[current] = {}
-      continue
-    }
-    const kvMatch = line.match(/^([^=]+?)\s*=\s*(.*)$/)
-    if (kvMatch && current) {
-      sections[current][kvMatch[1].trim()] = kvMatch[2].trim()
-    }
-  }
-  return sections
-}
+// ── Settings key registry ─────────────────────────────────────────────────────
+// dbStorage keys follow the pattern: settings/<name>
+// e.g. settings/jira_bin, settings/jira_user
+const SETTING_KEYS = [
+  'jira_bin', 'tess_bin', 'unison_bin', 'fswatch_bin',
+  'jira_user', 'jira_label', 'jira_url',
+]
+const SETTINGS_PREFIX = 'settings/'
 
 // ── Process registry ──────────────────────────────────────────────────────────
 // Keyed by jobId (UUID supplied by the caller). Supports concurrent jobs.
@@ -142,9 +129,10 @@ window.myscriptAPI = {
   // jobId    — caller-supplied UUID; uniquely identifies this job instance
   // toolName — the CLI command name (e.g. 'bisync', 'jira-analyzer', 'sync2pod')
   // args     — array of CLI arguments
-  // onData(line) — called with each stripped output line
-  // onExit(code) — called on exit; code is -1 if killed by signal
-  runTool(jobId, toolName, args, onData, onExit) {
+  // onData(line)   — called with each stripped stderr line (and command echo)
+  // onExit(code)   — called on exit; code is -1 if killed by signal
+  // onStdout(line) — optional; when provided, stdout lines go here instead of onData
+  runTool(jobId, toolName, args, onData, onExit, onStdout = null) {
     if (!isProjectRootValid()) {
       onData(`[error] Project root not found at: ${PROJECT_ROOT}`)
       onData('[error] Ensure utools/ is inside the myscript project and run: make install')
@@ -182,23 +170,34 @@ window.myscriptAPI = {
     // sync2pod's confirmation prompt is bypassed via --skip-verify in the UI.
     proc.stdin.end()
 
-    // Stream output line-by-line, stripping ANSI sequences
-    let buf = ''
-    const handleChunk = (data) => {
-      buf += stripAnsi(data.toString('utf8'))
-      const parts = buf.split('\n')
-      buf = parts.pop() // keep incomplete trailing line
+    // Route stdout and stderr to separate callbacks when onStdout is provided;
+    // otherwise merge both into onData (backward-compatible behaviour).
+    const stdoutCallback = onStdout ?? onData
+    let stdoutBuf = ''
+    let stderrBuf = ''
+
+    proc.stdout.on('data', (data) => {
+      stdoutBuf += stripAnsi(data.toString('utf8'))
+      const parts = stdoutBuf.split('\n')
+      stdoutBuf = parts.pop()
+      for (const line of parts) {
+        if (line !== '') stdoutCallback(line)
+      }
+    })
+
+    proc.stderr.on('data', (data) => {
+      stderrBuf += stripAnsi(data.toString('utf8'))
+      const parts = stderrBuf.split('\n')
+      stderrBuf = parts.pop()
       for (const line of parts) {
         if (line !== '') onData(line)
       }
-    }
-
-    proc.stdout.on('data', handleChunk)
-    proc.stderr.on('data', handleChunk)
+    })
 
     proc.on('close', (code, signal) => {
       // Flush any buffered text that arrived without a trailing newline
-      if (buf.trim()) { onData(buf.trim()); buf = '' }
+      if (stdoutBuf.trim()) { stdoutCallback(stdoutBuf.trim()); stdoutBuf = '' }
+      if (stderrBuf.trim()) { onData(stderrBuf.trim()); stderrBuf = '' }
       delete procs[jobId]
       // code is null when the process was killed by a signal
       onExit(signal ? -1 : (code ?? 0))
@@ -242,18 +241,83 @@ window.myscriptAPI = {
     } catch { return [] }
   },
 
-  loadJiraConfig() {
-    const configFile = path.join(os.homedir(), '.my_jira_config')
-    try {
-      const ini = parseIni(fs.readFileSync(configFile, 'utf8'))
-      return {
-        user: ini.jira?.user || '',
-        label: ini.jira?.label || '',
-        found: true,
-      }
-    } catch {
-      return { user: '', label: '', found: false }
+  // ── Global settings API (uTools dbStorage) ────────────────────────────────
+  // Keys: settings/jira_bin, settings/tess_bin, settings/unison_bin, etc.
+  loadSettings() {
+    const result = {}
+    for (const key of SETTING_KEYS) {
+      result[key] = utools.dbStorage.getItem(SETTINGS_PREFIX + key) || ''
     }
+    return result
+  },
+
+  getSetting(key) {
+    return utools.dbStorage.getItem(SETTINGS_PREFIX + key) || ''
+  },
+
+  saveSettings(settings) {
+    try {
+      for (const key of SETTING_KEYS) {
+        const val = settings[key]
+        if (typeof val === 'string' && val) {
+          utools.dbStorage.setItem(SETTINGS_PREFIX + key, val)
+        } else {
+          utools.dbStorage.removeItem(SETTINGS_PREFIX + key)
+        }
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err.message }
+    }
+  },
+
+  // ── Preferences API (uTools dbStorage, JSON values) ───────────────────────
+  // For UI preferences that should survive plugin restarts (column visibility,
+  // sorting, input history, etc.). Keys are prefixed with "prefs/".
+  getPref(key) {
+    try {
+      const raw = utools.dbStorage.getItem('prefs/' + key)
+      return raw != null ? JSON.parse(raw) : null
+    } catch { return null }
+  },
+
+  setPref(key, value) {
+    try {
+      if (value == null) {
+        utools.dbStorage.removeItem('prefs/' + key)
+      } else {
+        utools.dbStorage.setItem('prefs/' + key, JSON.stringify(value))
+      }
+    } catch { /* ignore */ }
+  },
+
+  testBinary(binPath, testArgs, onResult) {
+    if (!binPath) { onResult({ ok: false, error: 'empty path', output: '' }); return }
+    const args = Array.isArray(testArgs) ? testArgs : []
+    const proc = spawn(binPath, args, {
+      env: LOGIN_SHELL_ENV,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let output = ''
+    let done = false
+    const finish = (result) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      onResult({ ...result, output: output.trimEnd() })
+    }
+    proc.stdout.on('data', (data) => { output += data.toString() })
+    proc.stderr.on('data', (data) => { output += data.toString() })
+    const timer = setTimeout(() => {
+      try { proc.kill() } catch { /* already exited */ }
+      finish({ ok: false, error: 'timeout (10s)' })
+    }, 10000)
+    proc.on('close', (code) => finish({ ok: code === 0, code }))
+    proc.on('error', (err) => finish({ ok: false, error: err.message }))
+  },
+
+  openExternal(url) {
+    if (url) utools.shellOpenExternal(url)
   },
 }
 

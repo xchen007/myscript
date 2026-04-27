@@ -13,6 +13,16 @@
       </button>
     </div>
 
+    <button
+      class="nav-btn settings-btn"
+      :class="{ active: activeTool === 'settings' }"
+      @click="$emit('select', 'settings')"
+      title="Settings"
+    >
+      <span class="nav-icon">⚙️</span>
+      <span class="nav-label">Settings</span>
+    </button>
+
     <button class="nav-btn theme-btn" @click="cycleTheme" :title="`Theme: ${mode}`">
       <span class="nav-icon">{{ themeIcon[mode] }}</span>
       <span class="nav-label">{{ mode }}</span>
@@ -75,6 +85,9 @@ const { mode, cycleTheme, themeIcon } = useTheme()
 .nav-icon { font-size: 16px; line-height: 1; }
 .nav-label { font-size: 9px; font-weight: 500; }
 
-.theme-btn { margin-top: auto; opacity: 0.7; }
+.settings-btn { margin-top: auto; opacity: 0.8; }
+.settings-btn:hover { opacity: 1; }
+
+.theme-btn { opacity: 0.7; }
 .theme-btn:hover { opacity: 1; }
 </style>

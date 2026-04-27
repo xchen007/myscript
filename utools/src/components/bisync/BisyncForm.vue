@@ -2,17 +2,17 @@
   <form class="bisync-form" @submit.prevent="submit">
     <div class="form-group">
       <label>Source directory</label>
-      <input v-model="source" placeholder="/path/to/source" required />
+      <InputWithHistory ref="sourceRef" v-model="source" storageKey="bisync-source" placeholder="/path/to/source" required />
     </div>
 
     <div class="form-group">
       <label>Target directory</label>
-      <input v-model="target" placeholder="/path/to/target" required />
+      <InputWithHistory ref="targetRef" v-model="target" storageKey="bisync-target" placeholder="/path/to/target" required />
     </div>
 
     <div class="form-group">
       <label>Profile name (optional)</label>
-      <input v-model="name" placeholder="my-sync" />
+      <InputWithHistory ref="nameRef" v-model="name" storageKey="bisync-name" placeholder="my-sync" />
     </div>
 
     <div class="form-group">
@@ -35,6 +35,7 @@
 
 <script setup>
 import { ref } from 'vue'
+import InputWithHistory from '../shared/InputWithHistory.vue'
 
 const emit = defineEmits(['submit'])
 
@@ -47,8 +48,16 @@ const dryRun    = ref(false)
 const verbose   = ref(false)
 const nodeletion = ref(false)
 
+const sourceRef = ref(null)
+const targetRef = ref(null)
+const nameRef   = ref(null)
+
 function submit() {
   if (!source.value || !target.value) return
+
+  sourceRef.value?.push(source.value)
+  targetRef.value?.push(target.value)
+  if (name.value) nameRef.value?.push(name.value)
 
   const args = [source.value, target.value]
   if (name.value)     args.push('--name', name.value)

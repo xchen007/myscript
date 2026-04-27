@@ -33,11 +33,11 @@
     <template v-if="operation === 'init'">
       <div class="form-group">
         <label>Project name</label>
-        <input v-model="newProject" placeholder="my-project" required />
+        <InputWithHistory ref="newProjectRef" v-model="newProject" storageKey="sync2pod-project" placeholder="my-project" required />
       </div>
       <div class="form-group">
         <label>Local path</label>
-        <input v-model="newLocalPath" placeholder="/path/to/local/dir" required />
+        <InputWithHistory ref="newLocalPathRef" v-model="newLocalPath" storageKey="sync2pod-local-path" placeholder="/path/to/local/dir" required />
       </div>
     </template>
 
@@ -49,6 +49,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import InputWithHistory from '../shared/InputWithHistory.vue'
 
 const emit = defineEmits(['submit'])
 
@@ -60,6 +61,9 @@ const skipVerify  = ref(true)
 const dryRun      = ref(false)
 const newProject  = ref('')
 const newLocalPath = ref('')
+
+const newProjectRef  = ref(null)
+const newLocalPathRef = ref(null)
 
 const configHint = computed(() => {
   if (!project.value) return ''
@@ -82,6 +86,8 @@ function submit() {
     label = 'list-projects'
   } else if (operation.value === 'init') {
     if (!newProject.value || !newLocalPath.value) return
+    newProjectRef.value?.push(newProject.value)
+    newLocalPathRef.value?.push(newLocalPath.value)
     args = ['--init-config', '--project', newProject.value, '--local-path', newLocalPath.value]
     label = `init: ${newProject.value}`
   } else {

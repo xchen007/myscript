@@ -19,4 +19,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bisync*", "jiratools*", "sync2pod*"]
+include = ["bisync*", "jiratools*", "sync2pod*", "utils*"]
