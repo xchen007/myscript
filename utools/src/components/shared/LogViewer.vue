@@ -33,6 +33,7 @@ function lineClass(line) {
 .log-viewer {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
   background: var(--bg2);
   border-radius: var(--radius);
   padding: 8px 10px;
@@ -42,9 +43,9 @@ function lineClass(line) {
 }
 
 .log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
   margin: 0;
+  display: block;
 }
 .cmd  { color: var(--accent); }
 .ok   { color: var(--green); }

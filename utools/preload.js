@@ -6,20 +6,43 @@ const fs = require('fs')
 const os = require('os')
 
 // ── Project root ───────────────────────────────────────────────────────────────
-// preload.js lives at <project>/utools/preload.js — project root is one level up.
-const PROJECT_ROOT = path.resolve(__dirname, '..')
+// Walk up from __dirname to find the directory containing pyproject.toml.
+// This is more robust than a hard-coded '../' in case uTools or Electron resolves
+// __dirname differently depending on how the plugin is loaded.
+function findProjectRoot() {
+  let dir = __dirname
+  for (let i = 0; i < 5; i++) {
+    if (fs.existsSync(path.join(dir, 'pyproject.toml'))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) break  // reached filesystem root
+    dir = parent
+  }
+  // Last resort: one level up from __dirname (original assumption)
+  return path.resolve(__dirname, '..')
+}
+
+const PROJECT_ROOT = findProjectRoot()
 
 function isProjectRootValid() {
   return fs.existsSync(path.join(PROJECT_ROOT, 'pyproject.toml'))
 }
 
-// ── Login-shell PATH ──────────────────────────────────────────────────────────
-// Finder-launched apps get a minimal PATH. Read the real PATH from the login
-// shell so that tools installed via Homebrew, Go, pyenv, etc. are found.
-function getLoginShellPath() {
+// ── Login-shell environment ───────────────────────────────────────────────────
+// Finder-launched apps get a minimal set of environment variables. Read the full
+// environment from the login shell so that tools relying on custom env vars
+// (e.g. JIRA_API_TOKEN, JIRA_API_BASE_URL) work correctly.
+function getLoginShellEnv() {
   try {
     const shell = process.env.SHELL || '/bin/zsh'
-    return execSync(`${shell} -l -c 'echo $PATH'`, { timeout: 3000 }).toString().trim()
+    const raw = execSync(`${shell} -c 'source ~/.zshrc >/dev/null 2>&1; env'`, { timeout: 5000 }).toString().trim()
+    const env = {}
+    for (const line of raw.split('\n')) {
+      const idx = line.indexOf('=')
+      if (idx > 0) {
+        env[line.substring(0, idx)] = line.substring(idx + 1)
+      }
+    }
+    return env
   } catch {
     // Fallback: extend current PATH with the most common extra locations
     const extras = [
@@ -31,11 +54,11 @@ function getLoginShellPath() {
       '/usr/bin',
       '/bin',
     ]
-    return (process.env.PATH || '') + ':' + extras.join(':')
+    return { ...process.env, PATH: (process.env.PATH || '') + ':' + extras.join(':') }
   }
 }
 
-const LOGIN_SHELL_PATH = getLoginShellPath()
+const LOGIN_SHELL_ENV = getLoginShellEnv()
 
 // ── Tool binary discovery ──────────────────────────────────────────────────────
 // Returns { program, prefixArgs } or null.
@@ -145,7 +168,7 @@ window.myscriptAPI = {
 
     const proc = spawn(program, fullArgs, {
       cwd: PROJECT_ROOT,
-      env: { ...process.env, PATH: LOGIN_SHELL_PATH },
+      env: { ...LOGIN_SHELL_ENV, PYTHONUNBUFFERED: '1' },
       // detached: true creates a new process group (pgid == proc.pid).
       // process.kill(-pid, signal) then kills the entire tree, including
       // any child processes spawned by the tool (fswatch, kubectl, etc.).

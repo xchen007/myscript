@@ -1,41 +1,55 @@
 <template>
   <div class="app-shell">
-    <ToolNav :activeTool="activeTool" @select="activeTool = $event" />
+    <ToolNav :activeTool="activeTool" @select="onNavSelect" />
 
     <main class="app-main">
       <div v-if="!isReady" class="error-banner">
         ⚠️ Project root not found. Run <code>make install</code> inside the myscript directory.
       </div>
 
-      <BisyncPanel    v-show="activeTool === 'bisync'" />
-      <JiratoolsPanel v-show="activeTool === 'jiratools'" />
-      <Sync2podPanel  v-show="activeTool === 'sync2pod'" />
+      <RouterView />
     </main>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import ToolNav        from './components/ToolNav.vue'
-import BisyncPanel    from './components/bisync/BisyncPanel.vue'
-import JiratoolsPanel from './components/jiratools/JiratoolsPanel.vue'
-import Sync2podPanel  from './components/sync2pod/Sync2podPanel.vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import ToolNav from './components/ToolNav.vue'
 
-const activeTool = ref('bisync')
+const router = useRouter()
+const route  = useRoute()
+
 const isReady = ref(window.myscriptAPI?.isReady() ?? false)
 
-const CODE_TO_TOOL = {
-  myscript:        'bisync',
-  bisync:          'bisync',
-  jiratools:       'jiratools',
-  'jira-analyzer': 'jiratools',
-  sync2pod:        'sync2pod',
+// Map route path → nav id, and vice versa
+const ROUTE_TO_TOOL = {
+  '/bisync':   'bisync',
+  '/jira':     'jiratools',
+  '/sync2pod': 'sync2pod',
+}
+const TOOL_TO_ROUTE = {
+  bisync:    '/bisync',
+  jiratools: '/jira',
+  sync2pod:  '/sync2pod',
+}
+const CODE_TO_ROUTE = {
+  myscript:        '/bisync',
+  bisync:          '/bisync',
+  jiratools:       '/jira',
+  'jira-analyzer': '/jira',
+  sync2pod:        '/sync2pod',
 }
 
-// preload.js already calls utools.onPluginEnter and dispatches the
-// 'utoolsEnter' custom event — listen here instead of re-registering.
+const activeTool = computed(() => ROUTE_TO_TOOL[route.path] ?? 'bisync')
+
+function onNavSelect(toolId) {
+  router.push(TOOL_TO_ROUTE[toolId] ?? '/bisync')
+}
+
 function onUtoolsEnter(e) {
-  activeTool.value = CODE_TO_TOOL[e.detail?.code] ?? 'bisync'
+  const target = CODE_TO_ROUTE[e.detail?.code] ?? '/bisync'
+  router.push(target)
   isReady.value = window.myscriptAPI?.isReady() ?? false
 }
 

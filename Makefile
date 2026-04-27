@@ -1,4 +1,4 @@
-.PHONY: install clean utools-logo utools-install utools-build utools-dev
+.PHONY: install clean utools-logo utools-install utools-build
 
 SHELL := /bin/bash
 
@@ -23,13 +23,9 @@ utools-logo:
 utools-install:
 	cd utools && npm install
 
-# Build uTools plugin (outputs to utools/dist/)
+# Build uTools plugin (outputs to utools/dist/) — production-only workflow
 utools-build: utools-install
 	cd utools && npm run build
-
-# Start Vite dev server for uTools plugin
-utools-dev:
-	cd utools && npm run dev
 
 ## ── Utilities ────────────────────────────────────────────────────────
 

@@ -20,7 +20,7 @@
     </form>
 
     <div class="op-output">
-      <LogViewer v-if="lines.length > 0" :lines="lines" />
+      <LogViewer v-if="lines.length > 0 || running" :lines="lines" />
       <div v-else class="output-empty">Results will appear here.</div>
     </div>
   </div>
@@ -30,8 +30,8 @@
 import { ref, onMounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 
-const user    = ref('')
-const label   = ref('')
+const user    = ref('xchen17')
+const label   = ref('SDS-CP-Sprint08-2026')
 const all     = ref(false)
 const report  = ref(false)
 const running = ref(false)
@@ -52,11 +52,16 @@ onMounted(() => {
 
 function run() {
   if (!user.value || !label.value) return
+
+  if (!window.myscriptAPI?.isReady()) {
+    lines.value = ['[error] Project root not found. Run: make install inside the myscript directory.']
+    return
+  }
+
   const args = ['--user', user.value, '--label', label.value]
   if (all.value)    args.push('--all')
   if (report.value) args.push('--report')
 
-  // Stop previous job if still running
   if (jobId.value && running.value) {
     window.myscriptAPI.stopTool(jobId.value)
   }
@@ -65,13 +70,18 @@ function run() {
   running.value = true
   jobId.value = crypto.randomUUID()
 
-  window.myscriptAPI.runTool(
-    jobId.value,
-    'jira-analyzer',
-    args,
-    (line) => lines.value.push(line),
-    (_code) => { running.value = false },
-  )
+  try {
+    window.myscriptAPI.runTool(
+      jobId.value,
+      'jira-analyzer',
+      args,
+      (line) => lines.value.push(line),
+      (_code) => { running.value = false },
+    )
+  } catch (err) {
+    lines.value.push(`[error] Failed to start jira-analyzer: ${err.message}`)
+    running.value = false
+  }
 }
 </script>
 

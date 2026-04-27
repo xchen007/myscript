@@ -43,7 +43,6 @@
 
     <div class="form-actions">
       <button type="submit" class="btn btn-primary">▶ Run</button>
-      <button type="button" class="btn btn-ghost" @click="$emit('cancel')">Cancel</button>
     </div>
   </form>
 </template>
@@ -51,7 +50,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 
-const emit = defineEmits(['submit', 'cancel'])
+const emit = defineEmits(['submit'])
 
 const operation   = ref('sync')
 const project     = ref('')
@@ -105,7 +104,6 @@ function submit() {
   gap: 12px;
   padding: 12px;
   overflow-y: auto;
-  flex: 1;
 }
 
 .form-group { display: flex; flex-direction: column; gap: 4px; }

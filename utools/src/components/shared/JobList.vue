@@ -1,6 +1,6 @@
 <template>
   <div class="job-list">
-    <button class="btn btn-primary new-job-btn" @click="$emit('new-job')">＋ New job</button>
+    <button v-if="showNewBtn" class="btn btn-primary new-job-btn" @click="$emit('new-job')">＋ New job</button>
 
     <div v-if="jobs.length === 0" class="empty">No jobs yet.</div>
 
@@ -29,6 +29,7 @@ import StatusBadge from './StatusBadge.vue'
 defineProps({
   jobs:       { type: Array,  required: true },
   selectedId: { type: String, default: null  },
+  showNewBtn: { type: Boolean, default: true },
 })
 defineEmits(['select', 'new-job'])
 

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import os
+import shlex
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
@@ -133,7 +134,17 @@ class JiraAnalyzer:
         self.label = label
         self.jira_url = jira_url.rstrip('/') if jira_url else None
         self.show_report = show_report
+        self.jira_bin = self._find_jira_bin()
         self.tickets = []
+
+    @staticmethod
+    def _find_jira_bin() -> str:
+        """Locate the jira_cli binary via PATH. Returns full path or 'jira_cli' as fallback."""
+        import shutil
+        found = shutil.which('jira_cli')
+        if found:
+            return found
+        return 'jira_cli'
 
     @classmethod
     def load_config(cls) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -159,10 +170,13 @@ class JiraAnalyzer:
     def run_command(self, cmd: str, retry_count: int = 3) -> Optional[str]:
         """Execute jira CLI command with retry mechanism.
         Returns None on real failure, '' (empty string) when no results found."""
+        # Source ~/.zshrc to get env vars (JIRA_API_TOKEN etc.), suppress its output
+        shell_path = os.environ.get('SHELL', '/bin/zsh')
+        wrapped_cmd = f"{shell_path} -c 'source ~/.zshrc >/dev/null 2>&1; {cmd}'"
         for attempt in range(retry_count):
             try:
                 result = subprocess.run(
-                    cmd,
+                    wrapped_cmd,
                     shell=True,
                     capture_output=True,
                     text=True,
@@ -198,7 +212,7 @@ class JiraAnalyzer:
         """Fetch ticket list from JIRA"""
         print(f"📋 Step 1: Fetching ticket list for user '{self.user}' with label '{self.label}'...", file=sys.stderr)
 
-        cmd = f"jira issue list --raw -a {self.user} --label {self.label}"
+        cmd = f"{self.jira_bin} issue list --raw -a {self.user} --label {self.label}"
         output = self.run_command(cmd)
 
         if output is None:
@@ -220,7 +234,7 @@ class JiraAnalyzer:
 
     def fetch_ticket_details(self, ticket: str) -> Optional[Dict[str, Any]]:
         """Fetch detailed information for a ticket (including worklog)"""
-        cmd = f"jira issue view {ticket} --raw"
+        cmd = f"{self.jira_bin} issue view {ticket} --raw"
         output = self.run_command(cmd)
         
         if not output:

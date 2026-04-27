@@ -3,67 +3,110 @@
     <JobList
       :jobs="jobs"
       :selectedId="selectedId"
+      :showNewBtn="false"
       @select="selectJob"
-      @new-job="showForm = true"
     />
 
     <div class="panel-right">
-      <template v-if="showForm">
-        <div class="panel-header">New sync2pod job</div>
-        <Sync2podForm @submit="onSubmit" @cancel="showForm = false" />
-      </template>
+      <!-- Top: always-visible form -->
+      <div class="form-section">
+        <div class="section-label-bar">New sync2pod job</div>
+        <Sync2podForm @submit="onSubmit" />
+      </div>
 
-      <template v-else-if="currentJob">
-        <div class="panel-header">
-          <span class="job-title">{{ currentJob.label }}</span>
-          <StatusBadge :status="currentJob.status" />
-          <button v-if="currentJob.status === 'running'" class="btn btn-danger btn-sm" @click="stopJob(currentJob.id)">Stop</button>
-          <button v-else class="btn btn-ghost btn-sm" @click="removeJob(currentJob.id)">✕</button>
+      <!-- Bottom: log output -->
+      <div class="log-section">
+        <div class="log-header" :class="{ empty: !currentJob }">
+          <template v-if="currentJob">
+            <span class="job-title">{{ currentJob.label }}</span>
+            <StatusBadge :status="currentJob.status" />
+            <button
+              v-if="currentJob.status === 'running'"
+              class="btn btn-danger btn-sm"
+              @click="stopJob(currentJob.id)"
+            >Stop</button>
+            <button v-else class="btn btn-ghost btn-sm" @click="removeJob(currentJob.id)">✕</button>
+          </template>
+          <template v-else>
+            <span>Select a job or run a new one</span>
+          </template>
         </div>
-        <div class="args-line">{{ currentJob.args.join(' ') }}</div>
-        <LogViewer :lines="currentJob.lines" />
-      </template>
-
-      <template v-else>
-        <div class="empty-state">Click "＋ New job" to start a sync2pod operation.</div>
-      </template>
+        <LogViewer :lines="currentJob?.lines ?? []" />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
-import { useJobs }     from '../../composables/useJobs.js'
-import JobList         from '../shared/JobList.vue'
-import LogViewer       from '../shared/LogViewer.vue'
-import StatusBadge     from '../shared/StatusBadge.vue'
-import Sync2podForm    from './Sync2podForm.vue'
+import { computed } from 'vue'
+import { useJobs }  from '../../composables/useJobs.js'
+import JobList      from '../shared/JobList.vue'
+import LogViewer    from '../shared/LogViewer.vue'
+import StatusBadge  from '../shared/StatusBadge.vue'
+import Sync2podForm from './Sync2podForm.vue'
 
 const { jobs, selectedId, selectedJob, addJob, stopJob, removeJob, selectJob } = useJobs('sync2pod')
-
-const showForm   = ref(false)
 const currentJob = computed(() => selectedJob())
 
 function onSubmit({ label, args }) {
   addJob(label, args)
-  showForm.value = false
 }
 </script>
 
 <style scoped>
 .panel { display: flex; flex: 1; overflow: hidden; }
-.panel-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.panel-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-  background: var(--bg2); flex-shrink: 0; font-size: 12px; font-weight: 600;
+
+.panel-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
+
+.form-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 2px solid var(--border);
+  overflow-y: auto;
+  max-height: 58%;
+}
+
+.section-label-bar {
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.log-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 90px;
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.log-header.empty { color: var(--text2); font-weight: 400; font-style: italic; }
+
 .job-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.args-line {
-  padding: 4px 12px; font-family: var(--mono); font-size: 10px;
-  color: var(--text2); background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-.empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text2); font-size: 13px; }
 .btn-sm { padding: 3px 8px; font-size: 11px; }
-:deep(.log-viewer) { margin: 8px; border-radius: var(--radius); }
+
+:deep(.log-viewer) { margin: 6px; border-radius: var(--radius); }
 </style>

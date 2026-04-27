@@ -126,7 +126,7 @@ myscript/
 │   └── sync_local_to_pod.py
 ├── utools/                  # uTools plugin (HTML/JS wrapper)
 │   ├── plugin.json          # Plugin manifest
-│   ├── preload.js           # Node.js bridge → Python CLIs
+│   ├── preload.js           # Node.js bridge → Python CLIs (CommonJS)
 │   ├── index.html           # 3-tab UI
 │   ├── app.js               # Frontend logic
 │   ├── style.css            # Dark/light theme
