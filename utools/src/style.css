@@ -15,6 +15,14 @@
   --yellow:   #d97706;
   --radius:   6px;
   --mono:     'Menlo', 'Monaco', 'Consolas', monospace;
+  /* Terminal output area — always dark */
+  --term-bg:    #1a1b26;
+  --term-text:  #c0caf5;
+  --term-cmd:   #7aa2f7;
+  --term-ok:    #9ece6a;
+  --term-err:   #f7768e;
+  --term-warn:  #e0af68;
+  --term-dim:   #565f89;
 }
 
 /* ── Dark theme ────────────────────────────────────────────────────── */

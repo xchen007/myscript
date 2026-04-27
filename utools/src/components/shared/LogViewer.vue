@@ -22,9 +22,10 @@ watch(() => props.lines.length, () => {
 })
 
 function lineClass(line) {
-  if (line.startsWith('[error]') || line.startsWith('✕')) return 'err'
+  if (line.startsWith('❌') || line.startsWith('[error]') || line.startsWith('✕')) return 'err'
+  if (line.startsWith('⚠️') || line.startsWith('⚠'))  return 'warn'
   if (line.startsWith('$'))  return 'cmd'
-  if (line.startsWith('✓') || line.startsWith('[exited with code 0]')) return 'ok'
+  if (line.startsWith('✓') || line.startsWith('✅') || line.startsWith('[exited with code 0]')) return 'ok'
   return ''
 }
 </script>
@@ -34,12 +35,13 @@ function lineClass(line) {
   flex: 1;
   overflow-y: auto;
   overflow-x: auto;
-  background: var(--bg2);
+  background: var(--term-bg);
   border-radius: var(--radius);
   padding: 8px 10px;
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.55;
+  color: var(--term-text);
 }
 
 .log-line {
@@ -47,8 +49,9 @@ function lineClass(line) {
   margin: 0;
   display: block;
 }
-.cmd  { color: var(--accent); }
-.ok   { color: var(--green); }
-.err  { color: var(--red); }
-.log-empty { color: var(--text2); font-style: italic; }
+.cmd  { color: var(--term-cmd); }
+.ok   { color: var(--term-ok); }
+.err  { color: var(--term-err); }
+.warn { color: var(--term-warn); }
+.log-empty { color: var(--term-dim); font-style: italic; }
 </style>

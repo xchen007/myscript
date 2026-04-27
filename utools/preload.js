@@ -34,7 +34,7 @@ function isProjectRootValid() {
 function getLoginShellEnv() {
   try {
     const shell = process.env.SHELL || '/bin/zsh'
-    const raw = execSync(`${shell} -c 'source ~/.zshrc >/dev/null 2>&1; env'`, { timeout: 5000 }).toString().trim()
+    const raw = execSync(`${shell} -l -c 'source ~/.zshrc >/dev/null 2>&1; env'`, { timeout: 5000 }).toString().trim()
     const env = {}
     for (const line of raw.split('\n')) {
       const idx = line.indexOf('=')

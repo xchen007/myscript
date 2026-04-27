@@ -170,9 +170,9 @@ class JiraAnalyzer:
     def run_command(self, cmd: str, retry_count: int = 3) -> Optional[str]:
         """Execute jira CLI command with retry mechanism.
         Returns None on real failure, '' (empty string) when no results found."""
-        # Source ~/.zshrc to get env vars (JIRA_API_TOKEN etc.), suppress its output
+        # Use login shell for PATH + source ~/.zshrc for env vars (JIRA_API_TOKEN etc.)
         shell_path = os.environ.get('SHELL', '/bin/zsh')
-        wrapped_cmd = f"{shell_path} -c 'source ~/.zshrc >/dev/null 2>&1; {cmd}'"
+        wrapped_cmd = f"{shell_path} -l -c 'source ~/.zshrc >/dev/null 2>&1; {cmd}'"
         for attempt in range(retry_count):
             try:
                 result = subprocess.run(
