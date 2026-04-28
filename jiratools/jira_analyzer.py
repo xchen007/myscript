@@ -160,22 +160,28 @@ class JiraAnalyzer:
         return label_tickets
 
     def fetch_epic_tickets(self) -> List[str]:
-        """Fetch all sub-ticket keys under an Epic using JQL."""
+        """Fetch all sub-ticket keys under an Epic using 'jira epic list'."""
         print(f"📋 Fetching tickets for Epic {self.epic}...", file=sys.stderr)
-        # Use escaped double quotes so the JQL survives the login-shell wrapper
-        # (run_local_cmd wraps in: zsh -l -c '...cmd...' — inner single quotes break)
-        jql = f'\\"Epic Link\\" = {self.epic}'
-        cmd = f'{self.jira_bin} issue list --raw -q "{jql}"'
+        cmd = f'{self.jira_bin} epic list {self.epic} --raw'
         output = self.run_command(cmd)
         if output is None or output == '':
             print(f"✓ Found 0 tickets", file=sys.stderr)
             return []
         try:
-            data = json.loads(output)
-            keys = [t['key'] for t in data]
+            lines = output.strip().split('\n')
+            if len(lines) < 2:
+                print(f"✓ Found 0 tickets", file=sys.stderr)
+                return []
+            # TSV with multi-tab alignment: TYPE  KEY  SUMMARY  STATUS  ...
+            # Filter empty strings from split to handle consecutive tabs
+            keys = []
+            for line in lines[1:]:
+                cols = [c for c in line.split('\t') if c]
+                if len(cols) >= 2 and cols[1].strip():
+                    keys.append(cols[1].strip())
             print(f"✓ Found {len(keys)} tickets", file=sys.stderr)
             return keys
-        except (json.JSONDecodeError, KeyError):
+        except Exception:
             print(f"⚠️  Failed to parse epic ticket list", file=sys.stderr)
             return []
 
