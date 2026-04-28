@@ -223,6 +223,16 @@ onMounted(() => {
   restoreAutoRefresh()
 })
 
+function handleRunClick() {
+  if (isRefreshing.value) {
+    isRefreshing.value = false
+  } else if (appState.value === 'loading') {
+    stop()
+  } else {
+    run()
+  }
+}
+
 function run() {
   if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
   window.myscriptAPI?.setPref(PREF_USER, user.value)
