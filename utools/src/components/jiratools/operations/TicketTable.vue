@@ -165,8 +165,8 @@
       <div class="table-footer" @click.stop>
         <!-- Multi-select chip filters -->
         <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
-          <span class="cf-label">{{ fd.label }}</span>
-          <span v-if="!dropFilters[fd.key].length" class="cf-all">All</span>
+          <span class="cf-label" @click.stop="toggleDd(fd.key)">{{ fd.label }}</span>
+          <span v-if="!dropFilters[fd.key].length" class="cf-all" @click.stop="toggleDd(fd.key)">All</span>
           <span
             v-for="val in dropFilters[fd.key]"
             :key="val"
@@ -756,12 +756,14 @@ thead th.sortable:hover { color: var(--text); background: var(--bg4); }
   font-weight: 500;
   white-space: nowrap;
   border-right: 1px solid var(--border);
+  cursor: pointer;
 }
 .cf-all {
   padding: 4px 6px;
   color: var(--text3);
   font-size: 11px;
   white-space: nowrap;
+  cursor: pointer;
 }
 .cf-chip {
   display: inline-flex; align-items: center; gap: 2px;
