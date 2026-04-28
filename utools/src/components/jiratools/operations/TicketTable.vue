@@ -158,7 +158,6 @@
                     <div class="detail-body">
                       <div class="detail-grid">
                         <div class="di">
-                          <div class="dl">状态 / 优先级 / 类型</div>
                           <div class="dv badge-row">
                             <span :class="statusCls(row.status)" class="badge">{{ statusIcon(row.status) }}{{ row.status }}</span>
                             <span :class="priorityCls(row.priority)" class="badge">{{ priorityIcon(row.priority) }}{{ row.priority }}</span>
@@ -182,14 +181,6 @@
                           <div class="dl">Description</div>
                           <!-- eslint-disable-next-line vue/no-v-html -->
                           <div class="dv desc-text" v-html="formatDesc(row.description)" />
-                        </div>
-                        <div class="di full">
-                          <a
-                            v-if="row.url"
-                            class="open-jira-btn"
-                            href="#"
-                            @click.prevent.stop="openUrl(row.url)"
-                          >↗ 在 Jira 中打开</a>
                         </div>
                       </div>
 
