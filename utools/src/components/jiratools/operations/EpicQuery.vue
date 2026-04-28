@@ -14,44 +14,40 @@
         class="epic-input epic-filter-input"
         placeholder="Label filter (e.g. SDS-CP-Sprint)"
       />
+      <!-- Merged Run / Refresh / Stop button -->
       <button
-        class="btn epic-run-btn"
-        :disabled="appState === 'loading' || !jiraBin || !epicKey.trim()"
-        @click="run"
-      >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
-      <button v-if="appState === 'loading'" class="btn epic-stop-btn" @click="stop">■</button>
+        class="btn run-btn"
+        :class="{ loading: appState === 'loading', refreshing: isRefreshing }"
+        :disabled="!jiraBin || !epicKey.trim()"
+        @click="handleRunClick"
+      >
+        <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
+          {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
+        </span>
+        <span class="run-label">Run</span>
+      </button>
       <span class="header-spacer" />
       <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
-      <!-- Auto-refresh dropdown (Grafana style) -->
-      <div class="ar-dd-wrap" @click.stop>
-        <button
-          class="btn ar-dd-btn"
-          :class="{ active: autoRefresh }"
-          :disabled="!jiraBin || !epicKey.trim()"
-          @click.stop="arDdOpen = !arDdOpen"
-        >
-          🔄 Refresh
-          <span class="ar-interval-badge">{{ autoRefresh ? `${refreshIntervalMin}m` : 'Off' }}</span>
-          <span v-if="autoRefresh" class="ar-countdown-badge">{{ isRefreshing ? '…' : `${nextRefreshIn}s` }}</span>
-          <span class="chev">▾</span>
-        </button>
-        <div class="ar-dd-menu" v-show="arDdOpen">
-          <div
-            class="ar-dd-item"
-            :class="{ sel: !autoRefresh }"
-            @click="setArInterval(null)"
-          >
-            <span class="ar-chk">{{ !autoRefresh ? '✓' : '' }}</span> Off
-          </div>
-          <div
-            v-for="m in [1, 2, 5, 10, 15, 30]"
-            :key="m"
-            class="ar-dd-item"
-            :class="{ sel: autoRefresh && refreshIntervalMin === m }"
-            @click="setArInterval(m)"
-          >
-            <span class="ar-chk">{{ autoRefresh && refreshIntervalMin === m ? '✓' : '' }}</span> {{ m }}m
+      <!-- Interval dropdown (always visible) -->
+      <div class="ar-group" @click.stop>
+        <div class="ar-intv-wrap">
+          <button
+            class="ar-intv-btn"
+            :disabled="!jiraBin || !epicKey.trim()"
+            @click.stop="arDdOpen = !arDdOpen"
+          >{{ arIntervalLabel }} <span class="chev">▾</span></button>
+          <div class="ar-dd-menu" v-show="arDdOpen">
+            <div
+              v-for="opt in AR_INTERVAL_OPTS"
+              :key="opt.label"
+              class="ar-dd-item"
+              :class="{ sel: opt.secs === null ? !autoRefresh : (autoRefresh && refreshIntervalSecs === opt.secs) }"
+              @click="setArInterval(opt.secs)"
+            >
+              <span class="ar-chk">{{ (opt.secs === null ? !autoRefresh : (autoRefresh && refreshIntervalSecs === opt.secs)) ? '✓' : '' }}</span>
+              {{ opt.label }}
+            </div>
           </div>
         </div>
       </div>
@@ -88,66 +84,31 @@
   </div>
 </template>
 
+
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
+import { useJiraRun } from '../../../composables/useJiraRun.js'
+import { useAutoRefresh } from '../../../composables/useAutoRefresh.js'
 
-const jiraBin     = ref('')
+const {
+  jiraBin, appState, tableData, lines, activeTab,
+  lastUpdatedAt, agoText,
+  pushLog, stampNow, setTab, restoreTab,
+  run: coreRun, stop, initJiraBin, EMPTY_DATA: emptyData,
+} = useJiraRun({
+  tabPrefKey: 'epic-active-tab:v1',
+  onData(parsed) {
+    if (autoRefresh.value) startRefreshTimer()
+  },
+})
+
 const epicKey     = ref('')
 const labelFilter = ref('')
-const jobId       = ref(null)
-
-const appState    = ref('idle')
-const tableData   = ref(null)
-const lines       = ref([])
-const activeTab   = ref('tickets')
-const lastUpdatedAt = ref(0)
-const agoTick     = ref(0)
-let agoTimer = null
-
-// Auto-refresh state
-const autoRefresh        = ref(false)
-const refreshIntervalMin = ref(5)
-const isRefreshing       = ref(false)
-const nextRefreshIn      = ref(0)
-const arDdOpen           = ref(false)
-let refreshTimer   = null
-let countdownTimer = null
 
 const PREF_EPIC   = 'epic-default-key:v1'
 const PREF_FILTER = 'epic-default-filter:v1'
-const TAB_KEY     = 'epic-active-tab:v1'
-const PREF_AR     = 'epic-auto-refresh:v1'
-const PREF_AR_MIN = 'epic-auto-refresh-min:v1'
-const LOG_LIMIT   = 500
-
-const emptyData = {
-  tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {}
-}
-
-function stampNow() {
-  lastUpdatedAt.value = Date.now()
-  if (!agoTimer) {
-    agoTimer = setInterval(() => { agoTick.value++ }, 10_000)
-  }
-}
-const agoText = computed(() => {
-  void agoTick.value
-  if (!lastUpdatedAt.value) return ''
-  const secs = Math.floor((Date.now() - lastUpdatedAt.value) / 1000)
-  if (secs < 10) return 'just now'
-  if (secs < 60) return `${secs}s ago`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  return `${hrs}h${mins % 60}m ago`
-})
-
-function setTab(tab) {
-  activeTab.value = tab
-  window.myscriptAPI?.setPref(TAB_KEY, tab)
-}
 
 function buildArgs() {
   const key = epicKey.value.trim()
@@ -157,171 +118,79 @@ function buildArgs() {
   return args
 }
 
-/* ── Auto-refresh helpers ────────────────────────────────────────────────── */
-function applyRefreshData(parsed) {
-  tableData.value = parsed
-  stampNow()
-  if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
-    appState.value = 'done'
-  }
-}
+// ── Auto-refresh ────────────────────────────────────────────────────────────
+const arDdOpen = ref(false)
 
-function runBackground() {
-  if (!jiraBin.value || !epicKey.value.trim()) return
-  if (isRefreshing.value) return
-  isRefreshing.value = true
-  const bgJobId = `bg-${crypto.randomUUID()}`
-  const bgLines = []
-
-  try {
-    window.myscriptAPI.runTool(
-      bgJobId, 'jira-analyzer', buildArgs(),
-      () => {},
-      (code) => {
-        isRefreshing.value = false
-        if (code !== 0) return  // discard failed refresh
-      },
-      (line) => {
-        if (line.startsWith('__SPRINT_TABLE_JSON__:')) {
-          try {
-            const parsed = JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length))
-            applyRefreshData(parsed)
-          } catch (_) { /* ignore parse error in bg */ }
-        }
-      },
-    )
-  } catch (_) {
-    isRefreshing.value = false
-  }
-}
-
-function startRefreshTimer() {
-  stopRefreshTimer()
-  const secs = refreshIntervalMin.value * 60
-  nextRefreshIn.value = secs
-  countdownTimer = setInterval(() => {
-    nextRefreshIn.value = Math.max(0, nextRefreshIn.value - 1)
-  }, 1000)
-  refreshTimer = setInterval(() => {
-    nextRefreshIn.value = secs
-    runBackground()
-  }, secs * 1000)
-}
-
-function stopRefreshTimer() {
-  if (refreshTimer)  { clearInterval(refreshTimer);  refreshTimer = null }
-  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null }
-  nextRefreshIn.value = 0
-}
-
-// Unified setter: null = Off, number = interval in minutes
-function setArInterval(intervalMin) {
-  arDdOpen.value = false
-  if (intervalMin === null) {
-    autoRefresh.value = false
-    window.myscriptAPI?.setPref(PREF_AR, false)
-    stopRefreshTimer()
-  } else {
-    const v = Math.max(1, Math.min(60, Number(intervalMin) || 5))
-    refreshIntervalMin.value = v
-    window.myscriptAPI?.setPref(PREF_AR_MIN, v)
-    autoRefresh.value = true
-    window.myscriptAPI?.setPref(PREF_AR, true)
-    startRefreshTimer()
-  }
-}
-
-onUnmounted(() => {
-  stopRefreshTimer()
-  if (agoTimer) clearInterval(agoTimer)
+const {
+  autoRefresh, refreshIntervalSecs, isRefreshing, nextRefreshIn,
+  startRefreshTimer, setAutoRefresh, restoreAutoRefresh,
+} = useAutoRefresh({
+  appState,
+  buildArgs,
+  applyData(parsed) {
+    tableData.value = parsed
+    stampNow()
+    if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
+      appState.value = 'done'
+    }
+  },
+  canRun: () => !!jiraBin.value && !!epicKey.value.trim(),
+  pushLog,
+  prefKeyAR: 'epic-auto-refresh:v1',
+  prefKeyInterval: 'epic-auto-refresh-secs:v1',
+  defaultIntervalSecs: 300,
 })
 
+const AR_INTERVAL_OPTS = [
+  { label: 'Off',  secs: null },
+  { label: '30s',  secs: 30 },
+  { label: '1m',   secs: 60 },
+  { label: '2m',   secs: 120 },
+  { label: '5m',   secs: 300 },
+  { label: '10m',  secs: 600 },
+  { label: '15m',  secs: 900 },
+  { label: '30m',  secs: 1800 },
+]
+
+function formatInterval(secs) {
+  if (!secs) return 'Off'
+  return secs < 60 ? `${secs}s` : `${secs / 60}m`
+}
+
+const arIntervalLabel = computed(() =>
+  autoRefresh.value ? formatInterval(refreshIntervalSecs.value) : 'Off'
+)
+
+function setArInterval(secs) {
+  arDdOpen.value = false
+  setAutoRefresh(secs !== null, secs)
+}
+
+function handleRunClick() {
+  if (isRefreshing.value) {
+    isRefreshing.value = false
+  } else if (appState.value === 'loading') {
+    stop()
+  } else {
+    run()
+  }
+}
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
-  jiraBin.value = window.myscriptAPI?.getSetting('jira_bin') ?? ''
+  initJiraBin()
   epicKey.value = window.myscriptAPI?.getPref(PREF_EPIC) ?? ''
   labelFilter.value = window.myscriptAPI?.getPref(PREF_FILTER) ?? ''
-  const savedTab = window.myscriptAPI?.getPref(TAB_KEY)
-  if (savedTab === 'tickets' || savedTab === 'logs') activeTab.value = savedTab
-
-  // Restore auto-refresh prefs
-  const savedAR = window.myscriptAPI?.getPref(PREF_AR)
-  if (savedAR === true) autoRefresh.value = true
-  const savedARMin = window.myscriptAPI?.getPref(PREF_AR_MIN)
-  if (savedARMin) refreshIntervalMin.value = Number(savedARMin) || 5
+  restoreTab()
+  restoreAutoRefresh()
 })
-
-function pushLog(line) {
-  if (lines.value.length < LOG_LIMIT) {
-    lines.value.push(line)
-  } else if (lines.value.length === LOG_LIMIT) {
-    lines.value.push(`… (log truncated at ${LOG_LIMIT} lines)`)
-  }
-}
 
 function run() {
   const key = epicKey.value.trim()
   if (!jiraBin.value || !key) return
-
   window.myscriptAPI?.setPref(PREF_EPIC, key)
   window.myscriptAPI?.setPref(PREF_FILTER, labelFilter.value)
-
-  if (!window.myscriptAPI?.isReady()) {
-    lines.value = ['[error] Project root not found. Run: make install inside the myscript directory.']
-    appState.value = 'error'
-    return
-  }
-
-  if (jobId.value && appState.value === 'loading') {
-    window.myscriptAPI.stopTool(jobId.value)
-  }
-
-  lines.value     = []
-  appState.value  = 'loading'
-  jobId.value     = crypto.randomUUID()
-  activeTab.value = 'logs'
-
-  const args = buildArgs()
-
-  try {
-    window.myscriptAPI.runTool(
-      jobId.value,
-      'jira-analyzer',
-      args,
-      (line) => pushLog(line),
-      (code) => {
-        if (appState.value === 'loading') {
-          appState.value = code === 0 ? 'no-data' : 'error'
-        }
-      },
-      (line) => {
-        if (line.startsWith('__SPRINT_TABLE_JSON__:')) {
-          try {
-            const parsed = JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length))
-            tableData.value = parsed
-            appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
-            stampNow()
-            if (appState.value === 'done') {
-              activeTab.value = 'tickets'
-              if (autoRefresh.value) startRefreshTimer()
-            }
-          } catch (e) {
-            pushLog(`[error] Failed to parse data: ${e.message}`)
-            appState.value = 'error'
-          }
-        } else {
-          pushLog(line)
-        }
-      },
-    )
-  } catch (err) {
-    pushLog(`[error] Failed to start jira-analyzer: ${err.message}`)
-    appState.value = 'error'
-  }
-}
-
-function stop() {
-  if (jobId.value) window.myscriptAPI.stopTool(jobId.value)
-  appState.value = 'idle'
+  coreRun(buildArgs())
 }
 </script>
 
@@ -358,17 +227,41 @@ function stop() {
 }
 .epic-key-input { width: 180px; }
 .epic-filter-input { width: 160px; }
-.epic-run-btn {
-  background: var(--accent); color: #fff; border: none;
-  padding: 4px 14px; border-radius: var(--radius);
-  font-size: 12px; font-weight: 600; cursor: pointer;
+
+/* ── Merged Run / Refresh button ─────────────────────────────────────────── */
+.run-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: var(--radius) 0 0 var(--radius);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
   white-space: nowrap;
+  transition: opacity .12s;
 }
-.epic-run-btn:disabled { opacity: .5; cursor: not-allowed; }
-.epic-stop-btn {
-  background: var(--red); color: #fff; border: none;
-  padding: 4px 10px; border-radius: var(--radius);
-  font-size: 12px; cursor: pointer;
+.run-btn:disabled { opacity: .5; cursor: not-allowed; }
+.run-btn.loading, .run-btn.refreshing { opacity: 0.85; }
+
+.run-icon {
+  font-size: 13px;
+  display: inline-block;
+  line-height: 1;
+}
+.run-icon.spin { animation: ar-spin 0.8s linear infinite; }
+@keyframes ar-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.run-label { font-size: 12px; font-weight: 600; }
+.run-cd {
+  font-size: 10px;
+  opacity: 0.7;
+  min-width: 22px;
 }
 
 .config-warn-bar {
@@ -397,7 +290,7 @@ function stop() {
 .table-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .log-area { overflow-y: auto; }
 
-/* ── ago hint + auto-refresh ────────────────────────────────────────────── */
+/* ── ago hint ────────────────────────────────────────────────────────────── */
 .ago-hint {
   font-size: 11px;
   color: var(--fg-dim, var(--fg));
@@ -407,56 +300,40 @@ function stop() {
 }
 .header-spacer { flex: 1; }
 
-/* Grafana-style refresh dropdown */
-.ar-dd-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.ar-dd-btn {
+/* ── Interval dropdown (right half of button group) ─────────────────────── */
+.ar-group {
   display: flex;
   align-items: center;
-  gap: 5px;
+  flex-shrink: 0;
+}
+.ar-intv-wrap {
+  position: relative;
+}
+.ar-intv-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 0 var(--radius) var(--radius) 0;
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
   white-space: nowrap;
+  transition: background .12s;
+  height: 26px;
 }
-.ar-dd-btn:disabled { opacity: .45; cursor: not-allowed; }
-.ar-dd-btn.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.ar-interval-badge {
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0 5px;
-  line-height: 18px;
-}
-.ar-dd-btn.active .ar-interval-badge {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.ar-countdown-badge {
-  font-size: 10px;
-  opacity: 0.6;
-  min-width: 24px;
-  text-align: right;
-}
-.ar-dd-btn .chev { font-size: 10px; opacity: 0.7; }
+.ar-intv-btn:hover:not(:disabled) { background: var(--bg2); }
+.ar-intv-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ar-intv-btn .chev { font-size: 10px; opacity: 0.6; }
 
+/* Shared dropdown menu */
 .ar-dd-menu {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  min-width: 90px;
+  min-width: 80px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -477,6 +354,5 @@ function stop() {
 .ar-dd-item:hover { background: var(--bg2); }
 .ar-dd-item.sel { color: var(--accent); font-weight: 600; }
 .ar-chk { width: 12px; font-size: 11px; }
-
 
 </style>

@@ -25,6 +25,7 @@
 import { computed } from 'vue'
 import DailyChart from './DailyChart.vue'
 import WeeklyChart from './WeeklyChart.vue'
+import { fmtH } from '../../../composables/chartHelpers.js'
 
 const props = defineProps({
   dailyLog:  { type: Array, default: () => [] },   // [{date, seconds, label}]
@@ -34,7 +35,6 @@ const props = defineProps({
 })
 
 const hasDailyData = computed(() => props.dailyLog.length > 0)
-const hasWeeklyData = computed(() => props.weeklyLog.length > 0)
 
 // Aggregated stats
 const totalSeconds = computed(() => props.dailyLog.reduce((s, d) => s + d.seconds, 0))
@@ -52,12 +52,6 @@ const statCards = computed(() => [
   { value: fmtH(avgSeconds.value), label: 'Daily avg' },
   { value: `${daysAboveTarget.value}/${workDays.value}`, label: 'Days ≥ 8h', accent: daysAboveTarget.value > 0 },
 ])
-
-function fmtH(seconds) {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.round((seconds % 3600) / 60)
-  return m ? `${h}h ${m}m` : `${h}h`
-}
 </script>
 
 <style scoped>

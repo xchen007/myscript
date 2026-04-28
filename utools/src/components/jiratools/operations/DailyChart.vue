@@ -92,8 +92,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-
-const PALETTE = ['#58a6ff','#f0883e','#3fb950','#d2a8ff','#f778ba','#79c0ff','#ffd33d','#ff7b72']
+import { PALETTE, fmtH, shortLabel } from '../../../composables/chartHelpers.js'
 
 const props = defineProps({
   dailyLog: { type: Array, default: () => [] },   // [{date, seconds, label}]
@@ -222,15 +221,7 @@ const tipX = computed(() => {
   return Math.min(Math.max(hover.value.x - 45, ML), ML + PW - 90)
 })
 
-function fmtH(seconds) {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.round((seconds % 3600) / 60)
-  return m ? `${h}h ${m}m` : `${h}h`
-}
 
-function shortLabel(label) {
-  return label.length > 20 ? label.slice(0, 18) + '…' : label
-}
 </script>
 
 <style scoped>

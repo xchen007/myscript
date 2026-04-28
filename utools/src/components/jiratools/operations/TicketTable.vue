@@ -577,22 +577,6 @@ function typeIcon(t)     { return TYPE_ICONS[t] ?? '' }
 function statusIcon(s)   { return STATUS_ICONS[s] ?? '' }
 function priorityIcon(p) { return PRIORITY_ICONS[p] ?? '' }
 
-// ── Avatar ────────────────────────────────────────────────────────────────────
-const AVATAR_PALETTE = [
-  ['#f85149','#3a1208'], ['#3fb950','#0b2e10'], ['#4f9eff','#0d2240'],
-  ['#a371f7','#221040'], ['#d29922','#3a2800'], ['#e09022','#2e2000'],
-]
-const _avCache = {}; let _avIdx = 0
-function avatarStyle(name) {
-  if (!name) return { background: 'var(--bg4)', color: 'var(--text3)' }
-  if (!_avCache[name]) _avCache[name] = AVATAR_PALETTE[_avIdx++ % AVATAR_PALETTE.length]
-  const [fg, bg] = _avCache[name]
-  return { background: bg, color: fg }
-}
-function avatarInitials(name) {
-  return name?.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() ?? '?'
-}
-
 onMounted(loadPrefs)
 </script>
 

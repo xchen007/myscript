@@ -1,5 +1,5 @@
 <template>
-  <div class="sprint-report">
+  <div class="sprint-report" @click="arDdOpen = false">
     <!-- Always-visible header: title + inline inputs + run -->
     <div class="sprint-header">
       <span class="sprint-title">📊 Sprint Report</span>
@@ -35,29 +35,41 @@
           </div>
         </div>
       </div>
+      <!-- Merged Run / Refresh / Stop button -->
       <button
-        class="btn sprint-run-btn"
-        :disabled="appState === 'loading' || !jiraBin || !user || labelArr.length === 0"
-        @click="run"
-      >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
-      <button v-if="appState === 'loading'" class="btn sprint-stop-btn" @click="stop">■</button>
+        class="run-btn"
+        :class="{ loading: appState === 'loading', refreshing: isRefreshing }"
+        :disabled="!jiraBin || !user || labelArr.length === 0"
+        @click="handleRunClick"
+      >
+        <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
+          {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
+        </span>
+        <span class="run-label">Run</span>
+      </button>
       <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
-      <!-- Auto-refresh controls -->
-      <div class="ar-group">
-        <button
-          class="btn ar-toggle"
-          :class="{ on: autoRefresh }"
-          :disabled="!jiraBin || !user || labelArr.length === 0"
-          title="Auto-refresh"
-          @click="toggleAutoRefresh"
-        >🔄</button>
-        <select v-if="autoRefresh" class="ar-select" :value="refreshIntervalMin" @change="onIntervalChange($event.target.value)">
-          <option v-for="m in [1,2,5,10,15,30]" :key="m" :value="m">{{ m }}m</option>
-        </select>
-        <span v-if="autoRefresh" class="ar-countdown" :title="isRefreshing ? 'Refreshing…' : `Next in ${nextRefreshIn}s`">
-          {{ isRefreshing ? '⏳' : `${nextRefreshIn}s` }}
-        </span>
+      <!-- Interval dropdown (always visible) -->
+      <div class="ar-group" @click.stop>
+        <div class="ar-intv-wrap">
+          <button
+            class="ar-intv-btn"
+            :disabled="!jiraBin || !user || labelArr.length === 0"
+            @click.stop="arDdOpen = !arDdOpen"
+          >{{ arIntervalLabel }} <span class="chev">▾</span></button>
+          <div class="ar-dd-menu" v-show="arDdOpen">
+            <div
+              v-for="opt in AR_INTERVAL_OPTS"
+              :key="opt.label"
+              class="ar-dd-item"
+              :class="{ sel: opt.secs === null ? !autoRefresh : (autoRefresh && refreshIntervalSecs === opt.secs) }"
+              @click="setArInterval(opt.secs)"
+            >
+              <span class="ar-chk">{{ (opt.secs === null ? !autoRefresh : (autoRefresh && refreshIntervalSecs === opt.secs)) ? '✓' : '' }}</span>
+              {{ opt.label }}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -91,22 +103,42 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
 import WorklogDashboard from './WorklogDashboard.vue'
+import { useJiraRun } from '../../../composables/useJiraRun.js'
+import { useAutoRefresh } from '../../../composables/useAutoRefresh.js'
 
-const jiraBin  = ref('')
+// ── Extra refs for SprintReport-specific data ────────────────────────────────
+const dailyLog  = ref([])
+const weeklyLog = ref([])
+const labels    = ref([])
+
+const {
+  jiraBin, appState, tableData, lines, activeTab,
+  lastUpdatedAt, agoText,
+  pushLog, stampNow, setTab, restoreTab,
+  run: coreRun, stop, initJiraBin, EMPTY_DATA: emptyData,
+} = useJiraRun({
+  tabPrefKey: 'sprint-active-tab:v1',
+  onData(parsed) {
+    dailyLog.value  = parsed.daily_log ?? []
+    weeklyLog.value = parsed.weekly_log ?? []
+    labels.value    = parsed.meta?.labels ?? labelArr.value
+    if (autoRefresh.value) startRefreshTimer()
+  },
+})
+
 const user     = ref('')
 const labelArr = ref([])
-const label    = computed(() => labelArr.value.join(','))
-const jobId    = ref(null)
 
-// Label chip input state
-const newLabelInput   = ref('')
+// ── Label chip input ────────────────────────────────────────────────────────
+const newLabelInput    = ref('')
 const showLabelHistory = ref(false)
-const labelHistory    = ref([])
-const filteredHistory = computed(() =>
+const labelHistory     = ref([])
+const LABEL_HIST_KEY   = 'input-history:sprint-label'
+const filteredHistory  = computed(() =>
   labelHistory.value.filter(l => !labelArr.value.includes(l) &&
     (!newLabelInput.value || l.toLowerCase().includes(newLabelInput.value.toLowerCase())))
 )
@@ -114,15 +146,11 @@ const filteredHistory = computed(() =>
 function addLabel(lbl) {
   if (lbl && !labelArr.value.includes(lbl)) labelArr.value = [...labelArr.value, lbl]
 }
-function removeLabel(lbl) {
-  labelArr.value = labelArr.value.filter(l => l !== lbl)
-}
+function removeLabel(lbl) { labelArr.value = labelArr.value.filter(l => l !== lbl) }
 function addLabelInput() {
   const lbl = newLabelInput.value.trim()
   if (!lbl) return
   addLabel(lbl)
-  // Persist to history
-  const LABEL_HIST_KEY = 'input-history:sprint-label'
   const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
   hist.unshift(lbl)
   const saved = hist.slice(0, 20)
@@ -130,47 +158,16 @@ function addLabelInput() {
   labelHistory.value = saved
   newLabelInput.value = ''
 }
-function pickHistoryLabel(lbl) {
-  addLabel(lbl)
-  showLabelHistory.value = false
-  newLabelInput.value = ''
-}
-function hideLabelHistory() {
-  setTimeout(() => { showLabelHistory.value = false }, 150)
-}
+function pickHistoryLabel(lbl) { addLabel(lbl); showLabelHistory.value = false; newLabelInput.value = '' }
+function hideLabelHistory() { setTimeout(() => { showLabelHistory.value = false }, 150) }
 function deleteHistoryItem(lbl) {
-  const LABEL_HIST_KEY = 'input-history:sprint-label'
   const updated = labelHistory.value.filter(x => x !== lbl)
   window.myscriptAPI?.setPref(LABEL_HIST_KEY, updated)
   labelHistory.value = updated
 }
 
-// 'idle' | 'loading' | 'done' | 'no-data' | 'error'
-const appState    = ref('idle')
-const tableData   = ref(null)
-const dailyLog    = ref([])
-const weeklyLog   = ref([])
-const labels      = ref([])
-const lines       = ref([])
-const activeTab   = ref('tickets')
-const lastUpdatedAt = ref(0)   // epoch ms
-const agoTick     = ref(0)     // triggers recompute
-let agoTimer = null
-
-const PREF_USER     = 'sprint-default-user:v1'
-const PREF_LABEL    = 'sprint-default-label:v1'
-const TAB_KEY       = 'sprint-active-tab:v1'
-const PREF_AR       = 'sprint-auto-refresh:v1'
-const PREF_AR_MIN   = 'sprint-auto-refresh-min:v1'
-const LOG_LIMIT = 500
-
-// ── Auto-refresh ────────────────────────────────────────────────────────────
-const autoRefresh      = ref(false)
-const refreshIntervalMin = ref(5)
-const isRefreshing     = ref(false)   // silent background refresh in progress
-let   refreshTimer     = null
-let   countdownTimer   = null
-const nextRefreshIn    = ref(0)       // seconds until next auto-refresh
+const PREF_USER  = 'sprint-default-user:v1'
+const PREF_LABEL = 'sprint-default-label:v1'
 
 function buildArgs() {
   const jiraUrl = window.myscriptAPI?.getSetting('jira_url') ?? ''
@@ -180,221 +177,63 @@ function buildArgs() {
   return args
 }
 
-function applyRefreshData(parsed) {
-  tableData.value  = parsed
-  dailyLog.value   = parsed.daily_log ?? []
-  weeklyLog.value  = parsed.weekly_log ?? []
-  labels.value     = parsed.meta?.labels ?? labelArr.value
-  stampNow()
-  if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
-    appState.value = 'done'
-  }
-}
+// ── Auto-refresh ────────────────────────────────────────────────────────────
+const {
+  autoRefresh, refreshIntervalSecs, isRefreshing, nextRefreshIn,
+  startRefreshTimer, setAutoRefresh, restoreAutoRefresh,
+} = useAutoRefresh({
+  appState,
+  buildArgs,
+  applyData(parsed) {
+    tableData.value  = parsed
+    dailyLog.value   = parsed.daily_log ?? []
+    weeklyLog.value  = parsed.weekly_log ?? []
+    labels.value     = parsed.meta?.labels ?? labelArr.value
+    stampNow()
+    if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
+      appState.value = 'done'
+    }
+  },
+  canRun: () => !!jiraBin.value && !!user.value && labelArr.value.length > 0,
+  pushLog,
+  prefKeyAR: 'sprint-auto-refresh:v1',
+  prefKeyInterval: 'sprint-auto-refresh-secs:v1',
+  defaultIntervalSecs: 300,
+})
 
-// Silent background refresh — keeps old data until success
-function runBackground() {
-  if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
-  if (isRefreshing.value || appState.value === 'loading') return
-  isRefreshing.value = true
-  const bgJobId = crypto.randomUUID()
-  try {
-    window.myscriptAPI.runTool(
-      bgJobId,
-      'jira-analyzer',
-      buildArgs(),
-      (line) => pushLog(`[auto] ${line}`),
-      (code) => { if (code !== 0) isRefreshing.value = false },
-      (line) => {
-        if (line.startsWith('__SPRINT_TABLE_JSON__:')) {
-          try {
-            applyRefreshData(JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length)))
-          } catch (e) {
-            pushLog(`[auto error] ${e.message}`)
-          }
-          isRefreshing.value = false
-        } else {
-          pushLog(`[auto] ${line}`)
-        }
-      },
-    )
-  } catch (err) {
-    pushLog(`[auto error] ${err.message}`)
-    isRefreshing.value = false
-  }
-}
-
-function startRefreshTimer() {
-  stopRefreshTimer()
-  if (!autoRefresh.value) return
-  const ms = refreshIntervalMin.value * 60 * 1000
-  nextRefreshIn.value = refreshIntervalMin.value * 60
-  refreshTimer = setInterval(() => {
-    runBackground()
-    nextRefreshIn.value = refreshIntervalMin.value * 60
-  }, ms)
-  countdownTimer = setInterval(() => {
-    if (nextRefreshIn.value > 0) nextRefreshIn.value--
-  }, 1000)
-}
-
-function stopRefreshTimer() {
-  clearInterval(refreshTimer);  refreshTimer = null
-  clearInterval(countdownTimer); countdownTimer = null
-}
-
-function toggleAutoRefresh() {
-  autoRefresh.value = !autoRefresh.value
-  window.myscriptAPI?.setPref(PREF_AR, autoRefresh.value)
-  autoRefresh.value ? startRefreshTimer() : stopRefreshTimer()
-}
-
+const refreshIntervalMin = computed(() => Math.round(refreshIntervalSecs.value / 60))
+function toggleAutoRefresh() { setAutoRefresh(!autoRefresh.value) }
 function onIntervalChange(val) {
-  const v = Math.max(1, Math.min(60, Number(val) || 5))
-  refreshIntervalMin.value = v
-  window.myscriptAPI?.setPref(PREF_AR_MIN, v)
-  if (autoRefresh.value) startRefreshTimer()
+  const mins = Math.max(1, Math.min(60, Number(val) || 5))
+  setAutoRefresh(true, mins * 60)
 }
 
-onUnmounted(() => {
-  stopRefreshTimer()
-  if (agoTimer) clearInterval(agoTimer)
-})
-
-function stampNow() {
-  lastUpdatedAt.value = Date.now()
-  if (!agoTimer) {
-    agoTimer = setInterval(() => { agoTick.value++ }, 10_000)
-  }
-}
-const agoText = computed(() => {
-  void agoTick.value
-  if (!lastUpdatedAt.value) return ''
-  const secs = Math.floor((Date.now() - lastUpdatedAt.value) / 1000)
-  if (secs < 10) return 'just now'
-  if (secs < 60) return `${secs}s ago`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  return `${hrs}h${mins % 60}m ago`
-})
-
-const emptyData = { tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {} }
-
-function setTab(tab) {
-  activeTab.value = tab
-  window.myscriptAPI?.setPref(TAB_KEY, tab)
-}
-
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
-  jiraBin.value = window.myscriptAPI?.getSetting('jira_bin') ?? ''
-
+  initJiraBin()
   user.value = window.myscriptAPI?.getPref(PREF_USER)
-             ?? window.myscriptAPI?.getSetting('jira_user')
-             ?? ''
+             ?? window.myscriptAPI?.getSetting('jira_user') ?? ''
   const rawLabel = window.myscriptAPI?.getPref(PREF_LABEL)
-                ?? window.myscriptAPI?.getSetting('jira_label')
-                ?? ''
+                ?? window.myscriptAPI?.getSetting('jira_label') ?? ''
   labelArr.value = Array.isArray(rawLabel)
     ? rawLabel
     : rawLabel ? rawLabel.split(',').map(l => l.trim()).filter(Boolean) : []
-
-  labelHistory.value = window.myscriptAPI?.getPref('input-history:sprint-label') ?? []
-
-  const savedTab = window.myscriptAPI?.getPref(TAB_KEY)
-  if (savedTab === 'tickets' || savedTab === 'logs') activeTab.value = savedTab
-
-  // Restore auto-refresh prefs
-  const savedAR = window.myscriptAPI?.getPref(PREF_AR)
-  if (savedAR === true) autoRefresh.value = true
-  const savedARMin = window.myscriptAPI?.getPref(PREF_AR_MIN)
-  if (savedARMin) refreshIntervalMin.value = Number(savedARMin) || 5
+  labelHistory.value = window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []
+  restoreTab()
+  restoreAutoRefresh()
 })
-
-function pushLog(line) {
-  if (lines.value.length < LOG_LIMIT) {
-    lines.value.push(line)
-  } else if (lines.value.length === LOG_LIMIT) {
-    lines.value.push(`… (log truncated at ${LOG_LIMIT} lines)`)
-  }
-}
 
 function run() {
   if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
-
-  // Persist defaults and label history
   window.myscriptAPI?.setPref(PREF_USER, user.value)
   window.myscriptAPI?.setPref(PREF_LABEL, labelArr.value)
-  const LABEL_HIST_KEY = 'input-history:sprint-label'
   for (const lbl of labelArr.value) {
     const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
     hist.unshift(lbl)
     window.myscriptAPI?.setPref(LABEL_HIST_KEY, hist.slice(0, 20))
   }
   labelHistory.value = window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []
-
-  if (!window.myscriptAPI?.isReady()) {
-    lines.value = ['[error] Project root not found. Run: make install inside the myscript directory.']
-    appState.value = 'error'
-    return
-  }
-
-  if (jobId.value && appState.value === 'loading') {
-    window.myscriptAPI.stopTool(jobId.value)
-  }
-
-  lines.value   = []
-  appState.value  = 'loading'
-  jobId.value   = crypto.randomUUID()
-  activeTab.value = 'logs'   // auto-jump to logs while running
-
-  const args = buildArgs()
-
-  try {
-    window.myscriptAPI.runTool(
-      jobId.value,
-      'jira-analyzer',
-      args,
-      // onData: stderr + command echo → log
-      (line) => pushLog(line),
-      // onExit
-      (code) => {
-        if (appState.value === 'loading') {
-          appState.value = code === 0 ? 'no-data' : 'error'
-        }
-      },
-      // onStdout: detect structured JSON sentinel
-      (line) => {
-        if (line.startsWith('__SPRINT_TABLE_JSON__:')) {
-          try {
-            const parsed = JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length))
-            tableData.value = parsed
-            dailyLog.value  = parsed.daily_log ?? []
-            weeklyLog.value = parsed.weekly_log ?? []
-            labels.value    = parsed.meta?.labels ?? labelArr.value
-            appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
-            stampNow()
-            if (appState.value === 'done') {
-              activeTab.value = 'tickets'
-              if (autoRefresh.value) startRefreshTimer()
-            }
-          } catch (e) {
-            pushLog(`[error] Failed to parse table data: ${e.message}`)
-            appState.value = 'error'
-          }
-        } else {
-          pushLog(line)
-        }
-      },
-    )
-  } catch (err) {
-    pushLog(`[error] Failed to start jira-analyzer: ${err.message}`)
-    appState.value = 'error'
-  }
-}
-
-function stop() {
-  if (jobId.value) window.myscriptAPI.stopTool(jobId.value)
-  appState.value = 'idle'
+  coreRun(buildArgs())
 }
 </script>
 
@@ -533,29 +372,38 @@ function stop() {
 .hist-del:hover { color: var(--red, #e53e3e); background: rgba(229,62,62,.1); }
 .hist-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 
-/* Run / Stop ────────────────────────────────────────────────────────────── */
-.sprint-run-btn {
+/* Run / Stop → merged Run button ────────────────────────────────────────── */
+.run-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   flex-shrink: 0;
-  padding: 5px 16px;
+  padding: 4px 12px;
   font-size: 12px;
   font-weight: 600;
   background: var(--accent);
   color: #fff;
-  border-radius: var(--radius);
+  border: none;
+  border-radius: var(--radius) 0 0 var(--radius);
+  cursor: pointer;
   white-space: nowrap;
+  transition: opacity .12s;
 }
-.sprint-run-btn:hover:not(:disabled) { filter: brightness(1.1); }
-.sprint-run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.sprint-stop-btn {
-  flex-shrink: 0;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--red);
-  color: #fff;
-  border-radius: var(--radius);
+.run-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.run-icon {
+  font-size: 13px;
+  display: inline-block;
+  line-height: 1;
 }
-.sprint-stop-btn:hover { filter: brightness(0.9); }
+.run-icon.spin { animation: ar-spin 0.8s linear infinite; }
+@keyframes ar-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.run-label { font-size: 12px; font-weight: 600; }
+.run-cd { font-size: 10px; opacity: 0.7; min-width: 22px; }
 
 .config-warn-bar {
   flex-shrink: 0;
@@ -618,37 +466,50 @@ function stop() {
 .ar-group {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 4px;
   flex-shrink: 0;
 }
-.ar-toggle {
+.ar-intv-wrap { position: relative; }
+.ar-intv-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   font-size: 12px;
-  padding: 2px 6px;
-  opacity: 0.6;
-  transition: opacity 0.15s;
-}
-.ar-toggle.on {
-  opacity: 1;
-  background: var(--accent);
-  color: #fff;
-  border-radius: 4px;
-}
-.ar-select {
-  height: 24px;
-  font-size: 11px;
-  padding: 0 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0 var(--radius) var(--radius) 0;
   background: var(--bg);
   color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  height: 26px;
+  transition: background .12s;
+}
+.ar-intv-btn:hover:not(:disabled) { background: var(--bg2); }
+.ar-intv-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ar-intv-btn .chev { font-size: 10px; opacity: 0.6; }
+.ar-dd-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 80px;
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  z-index: 200;
+  overflow: hidden;
 }
-.ar-countdown {
-  font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.7;
-  min-width: 30px;
+.ar-dd-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--fg);
+  white-space: nowrap;
 }
-
-
+.ar-dd-item:hover { background: var(--bg2); }
+.ar-dd-item.sel { color: var(--accent); font-weight: 600; }
+.ar-chk { width: 12px; font-size: 11px; }
 </style>

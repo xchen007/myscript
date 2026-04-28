@@ -49,7 +49,7 @@
             fill="var(--bg3)" stroke="var(--border)" stroke-width="0.6"
           />
           <text :x="tipX + 45" :y="Math.max(hover.y - 36, 2) + 11" class="tt-date" text-anchor="middle">
-            {{ fmtWeek(hover.week) }} · {{ shortLabel(hover.label) }}
+            {{ fmtWeek(hover.week) }} · {{ shortLabel(hover.label, 16) }}
           </text>
           <text :x="tipX + 45" :y="Math.max(hover.y - 36, 2) + 23" class="tt-val" text-anchor="middle">
             {{ fmtH(hover.seconds) }}
@@ -69,7 +69,7 @@
     <div class="wc-legend">
       <span v-for="(lbl, idx) in labels" :key="lbl" class="leg-item">
         <svg width="14" height="10"><rect x="0" y="1" width="14" height="8" rx="2" :fill="PALETTE[idx % PALETTE.length]" fill-opacity="0.75" /></svg>
-        {{ shortLabel(lbl) }}
+        {{ shortLabel(lbl, 16) }}
       </span>
       <span v-if="labels.length > 1" class="leg-item">
         <svg width="18" height="10"><line x1="0" y1="5" x2="18" y2="5" stroke="var(--fg)" stroke-width="2" stroke-dasharray="4,2" /></svg>
@@ -81,8 +81,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-
-const PALETTE = ['#58a6ff','#f0883e','#3fb950','#d2a8ff','#f778ba','#79c0ff','#ffd33d','#ff7b72']
+import { PALETTE, fmtH, shortLabel } from '../../../composables/chartHelpers.js'
 
 const props = defineProps({
   weeklyLog: { type: Array, default: () => [] },  // [{week, seconds, label}]
@@ -174,21 +173,12 @@ const tipX = computed(() => {
   return Math.min(Math.max(hover.value.x - 45, ML), ML + PW - 90)
 })
 
-function fmtH(seconds) {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.round((seconds % 3600) / 60)
-  return m ? `${h}h ${m}m` : `${h}h`
-}
-
 function fmtWeek(weekStart) {
   const d = new Date(weekStart + 'T00:00:00')
   const mon = d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
   return mon
 }
 
-function shortLabel(label) {
-  return label.length > 16 ? label.slice(0, 14) + '…' : label
-}
 </script>
 
 <style scoped>

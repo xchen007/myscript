@@ -76,8 +76,7 @@ class JiraAnalyzer:
         self.jira_bin = jira_bin
         self.jira_url = jira_url.rstrip('/') if jira_url else None
         # Browse URL uses the web UI host (strip -cli suffix, e.g. jirap-cli → jirap)
-        import re as _re
-        self.browse_url = _re.sub(r'-cli(?=\.)', '', self.jira_url) if self.jira_url else None
+        self.browse_url = re.sub(r'-cli(?=\.)', '', self.jira_url) if self.jira_url else None
         self.show_report = show_report
         self.show_json = show_json
         self.epic = epic
@@ -302,36 +301,8 @@ class JiraAnalyzer:
             return None
         return self._parse_ticket_details(ticket, details)
 
-    def process_tickets(self, label_tickets: Dict[str, List[str]]):
-        """Process each ticket concurrently and collect data with label tag."""
-        all_keys: List[str] = []
-        key_label_map: Dict[str, str] = {}
-        for lbl, keys in label_tickets.items():
-            for key in keys:
-                all_keys.append(key)
-                key_label_map[key] = lbl
-
-        print(f"🔍 Step 2: Fetching details for {len(all_keys)} tickets...", file=sys.stderr)
-
-        def on_progress(completed: int, total: int, ticket: str):
-            if completed == 1 or completed == total:
-                print(f"  [{completed}/{total}] {ticket}", file=sys.stderr)
-
-        results = run_concurrent(
-            all_keys,
-            self._fetch_and_parse,
-            max_workers=5,
-            progress=on_progress,
-        )
-
-        self.tickets = []
-        for r in results:
-            if r is not None:
-                r['label'] = key_label_map.get(r['key'], self.labels[0] if self.labels else '')
-                self.tickets.append(r)
-
-    def process_epic_tickets(self, keys: List[str]):
-        """Process ticket list from epic query (no label tagging)."""
+    def _process_keys(self, keys: List[str], label_map: Optional[Dict[str, str]] = None):
+        """Process ticket keys concurrently, optionally tagging each with a label."""
         print(f"🔍 Fetching details for {len(keys)} tickets...", file=sys.stderr)
 
         def on_progress(completed: int, total: int, ticket: str):
@@ -348,10 +319,24 @@ class JiraAnalyzer:
         self.tickets = []
         for r in results:
             if r is not None:
-                r['label'] = ''
+                r['label'] = label_map.get(r['key'], self.labels[0] if self.labels else '') if label_map else ''
                 self.tickets.append(r)
 
         print(f"✓ Processed {len(self.tickets)} tickets successfully", file=sys.stderr)
+
+    def process_tickets(self, label_tickets: Dict[str, List[str]]):
+        """Process each ticket concurrently and collect data with label tag."""
+        all_keys: List[str] = []
+        key_label_map: Dict[str, str] = {}
+        for lbl, keys in label_tickets.items():
+            for key in keys:
+                all_keys.append(key)
+                key_label_map[key] = lbl
+        self._process_keys(all_keys, key_label_map)
+
+    def process_epic_tickets(self, keys: List[str]):
+        """Process ticket list from epic query (no label tagging)."""
+        self._process_keys(keys)
 
     # Sort order definitions
     TYPE_ORDER = {'Epic': 0, 'Story': 1, 'Task': 2, 'Sub-task': 3, 'Bug': 4}
@@ -570,26 +555,22 @@ class JiraAnalyzer:
     def run(self):
         """Main execution"""
         try:
+            has_data = False
             if self.epic:
-                # Epic mode: fetch all sub-tickets under the epic
                 keys = self.fetch_epic_tickets()
-                if not keys:
-                    if self.show_json:
-                        self.generate_json_output()
-                    return
-                self.process_epic_tickets(keys)
+                if keys:
+                    self.process_epic_tickets(keys)
+                    has_data = True
             else:
-                # Sprint mode: fetch by user + label
                 label_tickets = self.fetch_ticket_lists()
-                all_empty = all(len(v) == 0 for v in label_tickets.values())
-                if all_empty:
-                    if self.show_json:
-                        self.generate_json_output()
-                    return
-                self.process_tickets(label_tickets)
-            
-            # Generate and print report
-            self.generate_report()
+                if not all(len(v) == 0 for v in label_tickets.values()):
+                    self.process_tickets(label_tickets)
+                    has_data = True
+
+            if has_data:
+                self.generate_report()
+            elif self.show_json:
+                self.generate_json_output()
             
         except KeyboardInterrupt:
             print("\n❌ Operation cancelled by user", file=sys.stderr)
