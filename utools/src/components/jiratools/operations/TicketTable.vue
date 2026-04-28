@@ -616,6 +616,7 @@ onMounted(loadPrefs)
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
+  margin-top: 4px;
   background: var(--bg3);
   border-bottom: 1px solid var(--border);
   font-size: 11.5px;
