@@ -64,6 +64,7 @@
         <span class="tab-count">({{ lines.length }})</span>
         <span v-if="appState === 'loading'" class="tab-running">●</span>
       </button>
+      <span v-if="agoText" class="tab-ago">{{ agoText }}</span>
     </div>
 
     <!-- Table area -->
@@ -283,6 +284,7 @@ function run() {
 }
 .tab-btn:hover { color: var(--fg); }
 .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-ago { margin-left: auto; font-size: 10.5px; color: var(--text3); white-space: nowrap; }
 .tab-count { font-weight: 400; color: var(--text3); font-size: 11px; }
 .tab-running { color: var(--accent); font-size: 8px; animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100%{opacity:.3} 50%{opacity:1} }
