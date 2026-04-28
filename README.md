@@ -91,6 +91,28 @@ The `utools/` directory contains a plugin that exposes all three tools inside
 3. The plugin reads tools from `.venv/bin/` (created by `make install`).
    If the venv isn't found it falls back to `uv run <tool>`.
 
+### Production Build
+
+```bash
+cd utools && npm install   # first time only
+cd utools && npm run build # outputs to utools/dist/
+```
+
+### Dev Mode (Hot Reload)
+
+For rapid iteration with Vite HMR — code changes appear instantly without
+rebuilding:
+
+```bash
+cd utools && npm run dev   # starts Vite dev server on http://127.0.0.1:5173
+```
+
+`plugin.json` already has a `development.main` pointing to the dev server.
+In uTools Developer panel, click **接入开发** to connect.
+
+> **Note:** `preload.js` changes are NOT hot-reloaded. Enable
+> **退出到后台立即结束运行** in the plugin settings, then re-enter the plugin.
+
 ### Keywords
 
 | Keyword | Opens |
@@ -124,13 +146,12 @@ myscript/
 ├── sync2pod/                # Kubernetes pod sync tool
 │   ├── __init__.py
 │   └── sync_local_to_pod.py
-├── utools/                  # uTools plugin (HTML/JS wrapper)
-│   ├── plugin.json          # Plugin manifest
+├── utools/                  # uTools plugin (Vite + Vue 3)
+│   ├── plugin.json          # Plugin manifest (incl. development block)
 │   ├── preload.js           # Node.js bridge → Python CLIs (CommonJS)
-│   ├── index.html           # 3-tab UI
-│   ├── app.js               # Frontend logic
-│   ├── style.css            # Dark/light theme
-│   └── logo.png             # Plugin icon
+│   ├── vite.config.mjs      # Vite config (ESM)
+│   ├── src/                 # Vue 3 SPA source
+│   └── dist/                # Built output (gitignored)
 ├── pyproject.toml           # Package config & entry points
 └── Makefile                 # install / utools-logo / clean
 ```
