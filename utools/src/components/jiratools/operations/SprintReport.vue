@@ -343,10 +343,6 @@ function run() {
   }
 
   lines.value   = []
-  tableData.value = null
-  dailyLog.value  = []
-  weeklyLog.value = []
-  labels.value    = []
   appState.value  = 'loading'
   jobId.value   = crypto.randomUUID()
   activeTab.value = 'logs'   // auto-jump to logs while running

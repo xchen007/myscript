@@ -254,7 +254,6 @@ function run() {
   }
 
   lines.value     = []
-  tableData.value = null
   appState.value  = 'loading'
   jobId.value     = crypto.randomUUID()
   activeTab.value = 'logs'

@@ -303,7 +303,7 @@ if (props.labelFilter !== undefined && props.labelFilter !== '') {
 const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
 const globalFilter = ref('')
-const dropFilters  = reactive({ type: '', status: '', priority: '' })
+const dropFilters  = reactive({ type: '', status: '', priority: '', assignee: '' })
 const openDd       = ref('')
 
 const orderedColumns = computed(() =>
@@ -354,11 +354,17 @@ const priorityOptions = computed(() => {
   props.data.tickets?.forEach(t => { if (!(t.priority in m)) m[t.priority] = t.priority_rank })
   return Object.entries(m).sort((a, b) => a[1] - b[1]).map(e => e[0])
 })
+const assigneeOptions = computed(() => {
+  const s = new Set()
+  props.data.tickets?.forEach(t => { if (t.assignee) s.add(t.assignee) })
+  return [...s].sort()
+})
 
 const FILTER_DEFS = computed(() => [
   { key: 'type',     label: 'Type',     options: () => typeOptions.value,     badgeCls: typeCls,     badgeIcon: typeIcon },
   { key: 'status',   label: 'Status',   options: () => statusOptions.value,   badgeCls: statusCls,   badgeIcon: () => '' },
   { key: 'priority', label: 'Priority', options: () => priorityOptions.value, badgeCls: priorityCls, badgeIcon: priorityIcon },
+  { key: 'assignee', label: 'Assignee', options: () => assigneeOptions.value, badgeCls: () => '',    badgeIcon: () => '' },
 ])
 
 // ── Derived rows (filtered + sorted) ─────────────────────────────────────────
@@ -367,6 +373,7 @@ const displayRows = computed(() => {
   if (dropFilters.type)     rows = rows.filter(t => t.type === dropFilters.type)
   if (dropFilters.status)   rows = rows.filter(t => t.status === dropFilters.status)
   if (dropFilters.priority) rows = rows.filter(t => t.priority === dropFilters.priority)
+  if (dropFilters.assignee) rows = rows.filter(t => t.assignee === dropFilters.assignee)
   if (globalFilter.value) {
     const q = globalFilter.value.toLowerCase()
     rows = rows.filter(t =>
