@@ -627,7 +627,6 @@ function onDocMouseDown(e) {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  margin-top: 4px;
   background: var(--bg3);
   border-bottom: 1px solid var(--border);
   font-size: 11.5px;
@@ -726,7 +725,7 @@ function onDocMouseDown(e) {
   flex-direction: column;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  overflow: hidden; background: var(--bg2);
+  background: var(--bg2);
   margin: 0;
 }
 .table-scroll { overflow-x: auto; }
@@ -1056,6 +1055,7 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 
 /* ── Footer ───────────────────────────────────────────────────────────────── */
 .table-footer {
+  position: sticky; bottom: 0; z-index: 5;
   padding: 5px 8px; border-top: 1px solid var(--border);
   background: var(--bg3); font-size: 11px; color: var(--text3);
   display: flex; align-items: center; gap: 5px;
