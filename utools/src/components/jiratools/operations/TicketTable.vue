@@ -138,6 +138,9 @@
                   <template v-if="col.id === 'key'">
                     <a class="ticket-key" href="#" @click.prevent.stop="openUrl(row.url)">{{ row.key }}</a>
                   </template>
+                  <template v-else-if="col.id === 'project'">
+                    <span class="project-tag">{{ row.project ?? row.key.rsplit?.('-', 1)[0] ?? '—' }}</span>
+                  </template>
                   <template v-else-if="col.id === 'summary'">
                     <span class="summary-text">{{ row.summary }}</span>
                   </template>
@@ -247,6 +250,7 @@ const PREF_KEY = 'sprint-table-prefs:v2'
 // ── Column definitions ───────────────────────────────────────────────────────
 const COLUMNS = [
   { id: 'key',       label: 'Key',       sortKey: 'key' },
+  { id: 'project',   label: 'Project',   sortKey: 'project' },
   { id: 'summary',   label: 'Summary',   sortKey: 'summary' },
   { id: 'type',      label: 'Type',      sortKey: 'type_rank' },
   { id: 'status',    label: 'Status',    sortKey: 'status_rank' },
@@ -260,8 +264,8 @@ const COLUMNS = [
 
 // ── State ────────────────────────────────────────────────────────────────────
 const sorting      = ref([])   // [{ col: sortKey, dir: 'asc'|'desc' }]
-const colVis       = reactive(Object.fromEntries(
-  COLUMNS.map(c => [c.id, c.id !== 'done_label'])
+const colVis = reactive(Object.fromEntries(
+  COLUMNS.map(c => [c.id, c.id !== 'done_label' && c.id !== 'project'])
 ))
 const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
@@ -470,7 +474,7 @@ function onDragEnd() {
 
 // ── Formatting ────────────────────────────────────────────────────────────────
 const CELL_CLASS = {
-  key: 'td-key', summary: 'td-summary', points: 'td-num',
+  key: 'td-key', project: 'td-project', summary: 'td-summary', points: 'td-num',
   estimated: 'td-time', logged: 'td-time', done_label: 'td-done',
 }
 function cellClass(id) { return CELL_CLASS[id] || '' }
@@ -719,11 +723,24 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 .exp-arrow.open { transform: rotate(90deg); color: var(--accent); }
 
 .td-key { white-space: nowrap; }
+.td-project { white-space: nowrap; }
 .ticket-key {
   font-family: var(--mono); color: var(--accent); font-size: 11.5px;
   font-weight: 600; text-decoration: none;
 }
 .ticket-key:hover { text-decoration: underline; }
+
+.project-tag {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text2);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
 
 .td-summary { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .summary-text { color: var(--text); }

@@ -63,11 +63,16 @@ def _adf_to_text(node: Any) -> str:
 
 
 class JiraAnalyzer:
-    def __init__(self, user: str, label: str, jira_bin: str,
+    def __init__(self, user: str, label: str | list[str], jira_bin: str,
                  jira_url: str = None, show_report: bool = False,
                  show_json: bool = False):
         self.user = user
-        self.label = label
+        # Accept a single string or a list of labels
+        if isinstance(label, list):
+            self.labels = [l.strip() for l in label if l.strip()]
+        else:
+            self.labels = [l.strip() for l in label.split(',') if l.strip()]
+        self.label = ','.join(self.labels)  # raw string for backward compat
         self.jira_bin = jira_bin
         self.jira_url = jira_url.rstrip('/') if jira_url else None
         self.show_report = show_report
@@ -113,29 +118,42 @@ class JiraAnalyzer:
 
         return None
 
-    def fetch_ticket_list(self) -> List[str]:
-        """Fetch ticket list from JIRA"""
-        print(f"📋 Step 1: Fetching ticket list for user '{self.user}' with label '{self.label}'...", file=sys.stderr)
-
-        cmd = f"{self.jira_bin} issue list --raw -a {self.user} --label {self.label}"
+    def _fetch_for_label(self, label: str) -> tuple:
+        """Fetch ticket keys for a single label. Returns (label, keys)."""
+        cmd = f"{self.jira_bin} issue list --raw -a {self.user} --label {label}"
         output = self.run_command(cmd)
-
-        if output is None:
-            print("❌ Failed to fetch ticket list", file=sys.stderr)
-            return []
-
-        if output == '':
-            print(f"ℹ️  未找到 label='{self.label}' 的 tickets", file=sys.stderr)
-            return []
-
+        if output is None or output == '':
+            return (label, [])
         try:
-            tickets_data = json.loads(output)
-            tickets = [t['key'] for t in tickets_data]
-            print(f"✓ Found {len(tickets)} tickets", file=sys.stderr)
-            return tickets
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"❌ Failed to parse ticket list: {e}", file=sys.stderr)
-            return []
+            data = json.loads(output)
+            return (label, [t['key'] for t in data])
+        except (json.JSONDecodeError, KeyError):
+            return (label, [])
+
+    def fetch_ticket_lists(self) -> Dict[str, List[str]]:
+        """Fetch ticket lists for all labels. Deduplicates across labels (first-label-wins)."""
+        print(f"📋 Step 1: Fetching ticket lists for {len(self.labels)} label(s)...", file=sys.stderr)
+
+        if len(self.labels) == 1:
+            lbl = self.labels[0]
+            _, keys = self._fetch_for_label(lbl)
+            print(f"✓ Found {len(keys)} tickets", file=sys.stderr)
+            return {lbl: keys}
+
+        results = run_concurrent(self.labels, self._fetch_for_label, max_workers=5)
+
+        seen: set[str] = set()
+        label_tickets: Dict[str, List[str]] = {}
+        total = 0
+        for label, keys in results:
+            unique = [k for k in keys if k not in seen]
+            seen.update(unique)
+            label_tickets[label] = unique
+            total += len(unique)
+            print(f"  ✓ [{label}] {len(unique)} tickets", file=sys.stderr)
+
+        print(f"✓ Found {total} tickets across {len(self.labels)} label(s)", file=sys.stderr)
+        return label_tickets
 
     def fetch_ticket_details(self, ticket: str) -> Optional[Dict[str, Any]]:
         """Fetch detailed information for a ticket (including worklog)"""
@@ -151,16 +169,26 @@ class JiraAnalyzer:
             return None
 
     def extract_worklog_time(self, issue_data: Dict[str, Any]) -> float:
-        """Extract total worklog time in hours"""
+        """Extract total worklog time in hours for self.user only"""
         try:
             fields = issue_data.get('fields', {})
             worklog = fields.get('worklog', {})
             worklogs = worklog.get('worklogs', [])
-            
-            total_seconds = sum(log.get('timeSpentSeconds', 0) for log in worklogs)
+
+            total_seconds = sum(
+                log.get('timeSpentSeconds', 0) for log in worklogs
+                if self._is_user_worklog(log)
+            )
             return total_seconds / 3600  # Convert to hours
         except Exception:
             return 0.0
+
+    def _is_user_worklog(self, log: Dict[str, Any]) -> bool:
+        """Check if a worklog entry belongs to self.user."""
+        author = log.get('author', {})
+        return (author.get('name', '') == self.user
+                or author.get('key', '') == self.user
+                or author.get('accountId', '') == self.user)
 
     def _extract_done_label(self, fields: Dict[str, Any]) -> str:
         """Return 'this week'/'last week'/'YYYY-MM-DD' for Resolved/Closed tickets.
@@ -208,9 +236,11 @@ class JiraAnalyzer:
                     except (TypeError, ValueError):
                         pass
 
-            # Collect per-worklog entries with date (for daily chart)
+            # Collect per-worklog entries with date (for daily chart) — user only
             worklog_entries = []
             for wl in fields.get('worklog', {}).get('worklogs', []):
+                if not self._is_user_worklog(wl):
+                    continue
                 started = wl.get('started', '')
                 seconds = wl.get('timeSpentSeconds', 0)
                 if started and seconds:
@@ -241,22 +271,34 @@ class JiraAnalyzer:
             return None
         return self._parse_ticket_details(ticket, details)
 
-    def process_tickets(self, tickets: List[str]):
-        """Process each ticket concurrently and collect data"""
-        print(f"🔍 Step 2: Fetching details for {len(tickets)} tickets...", file=sys.stderr)
+    def process_tickets(self, label_tickets: Dict[str, List[str]]):
+        """Process each ticket concurrently and collect data with label tag."""
+        all_keys: List[str] = []
+        key_label_map: Dict[str, str] = {}
+        for lbl, keys in label_tickets.items():
+            for key in keys:
+                all_keys.append(key)
+                key_label_map[key] = lbl
+
+        print(f"🔍 Step 2: Fetching details for {len(all_keys)} tickets...", file=sys.stderr)
 
         def on_progress(completed: int, total: int, ticket: str):
             if completed == 1 or completed == total:
                 print(f"  [{completed}/{total}] {ticket}", file=sys.stderr)
 
         results = run_concurrent(
-            tickets,
+            all_keys,
             self._fetch_and_parse,
             max_workers=5,
             progress=on_progress,
         )
 
-        self.tickets = [r for r in results if r is not None]
+        self.tickets = []
+        for r in results:
+            if r is not None:
+                r['label'] = key_label_map.get(r['key'], self.labels[0])
+                self.tickets.append(r)
+
         print(f"✓ Processed {len(self.tickets)} tickets successfully", file=sys.stderr)
 
     # Sort order definitions
@@ -291,8 +333,10 @@ class JiraAnalyzer:
         tickets_data = []
         for t in sorted_tickets:
             url = f"{self.jira_url}/browse/{t['key']}" if self.jira_url else None
+            project = t['key'].rsplit('-', 1)[0]
             tickets_data.append({
                 'key': t['key'],
+                'project': project,
                 'type': t['type'],
                 'type_rank': self.TYPE_ORDER.get(t['type'], 99),
                 'status': t['status'],
@@ -323,12 +367,22 @@ class JiraAnalyzer:
 
         total_points = sum((t.get('points') or 0) for t in tickets_data)
 
-        # Aggregate worklog entries by date across all tickets
-        daily_log_agg: Dict[str, int] = defaultdict(int)
+        # Aggregate worklog entries by (date, label)
+        daily_agg: Dict[tuple, int] = defaultdict(int)
         for t in self.tickets:
             for entry in t.get('worklog_entries', []):
-                daily_log_agg[entry['date']] += entry['seconds']
-        daily_log = [{'date': d, 'seconds': s} for d, s in sorted(daily_log_agg.items())]
+                daily_agg[(entry['date'], t['label'])] += entry['seconds']
+        daily_log = [{'date': d, 'seconds': s, 'label': l}
+                     for (d, l), s in sorted(daily_agg.items())]
+
+        # Aggregate by (week_start_monday, label)
+        weekly_agg: Dict[tuple, int] = defaultdict(int)
+        for e in daily_log:
+            dt = datetime.strptime(e['date'], '%Y-%m-%d')
+            week_start = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+            weekly_agg[(week_start, e['label'])] += e['seconds']
+        weekly_log = [{'week': w, 'seconds': s, 'label': l}
+                      for (w, l), s in sorted(weekly_agg.items())]
 
         stats = {
             'total_tickets': n,
@@ -343,11 +397,13 @@ class JiraAnalyzer:
         meta = {
             'user': self.user,
             'label': self.label,
+            'labels': self.labels,
             'generated_at': datetime.now().isoformat(),
-            'schema_version': 1,
+            'schema_version': 2,
         }
 
-        payload = {'tickets': tickets_data, 'stats': stats, 'meta': meta, 'daily_log': daily_log}
+        payload = {'tickets': tickets_data, 'stats': stats, 'meta': meta,
+                   'daily_log': daily_log, 'weekly_log': weekly_log}
         print(f"__SPRINT_TABLE_JSON__:{json.dumps(payload, ensure_ascii=False)}", flush=True)
 
     def generate_report(self):
@@ -460,14 +516,15 @@ class JiraAnalyzer:
     def run(self):
         """Main execution"""
         try:
-            # Fetch and process tickets
-            tickets = self.fetch_ticket_list()
-            if not tickets:
+            # Fetch and process tickets (multi-label)
+            label_tickets = self.fetch_ticket_lists()
+            all_empty = all(len(v) == 0 for v in label_tickets.values())
+            if all_empty:
                 if self.show_json:
                     self.generate_json_output()  # emit empty JSON so GUI knows run completed
-                return  # message already printed in fetch_ticket_list
-            
-            self.process_tickets(tickets)
+                return
+
+            self.process_tickets(label_tickets)
             
             # Generate and print report
             self.generate_report()
@@ -511,7 +568,9 @@ Examples:
     )
     parser.add_argument(
         '-l', '--label',
-        help='JIRA label to filter tickets'
+        action='append',
+        dest='labels',
+        help='JIRA label to filter tickets (repeatable, or comma-separated)'
     )
     parser.add_argument(
         '--jira-url',
@@ -550,14 +609,19 @@ Examples:
         sys.exit(0 if analyzer.test_connection() else 1)
 
     # Validate required parameters for normal run
-    if not args.user or not args.label:
+    if not args.user or not args.labels:
         print("❌ Error: Both --user and --label are required", file=sys.stderr)
         parser.print_help(file=sys.stderr)
         sys.exit(1)
 
+    # Flatten comma-separated labels from all --label args
+    all_labels: list[str] = []
+    for raw in args.labels:
+        all_labels.extend(l.strip() for l in raw.split(',') if l.strip())
+
     analyzer = JiraAnalyzer(
         user=args.user,
-        label=args.label,
+        label=all_labels,
         jira_bin=args.jira_bin,
         jira_url=args.jira_url,
         show_report=args.report,

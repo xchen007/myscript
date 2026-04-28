@@ -8,7 +8,26 @@
         :class="{ active: activeTool === tool.id }"
         @click="$emit('select', tool.id)"
       >
-        <span class="nav-icon">{{ tool.icon }}</span>
+        <span class="nav-icon">
+          <template v-if="tool.id === 'jiratools'">
+            <svg class="jira-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="jira-a" x1="16" y1="6.5" x2="9" y2="16" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#2684FF"/>
+                  <stop offset="100%" stop-color="#0052CC"/>
+                </linearGradient>
+                <linearGradient id="jira-b" x1="16" y1="25.5" x2="23" y2="16" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#2684FF"/>
+                  <stop offset="100%" stop-color="#0052CC"/>
+                </linearGradient>
+              </defs>
+              <path d="M16 6L6 16l5.5 5.5L16 16l4.5-4.5L16 6z" fill="url(#jira-a)"/>
+              <path d="M16 26l10-10-5.5-5.5L16 16l-4.5 4.5L16 26z" fill="url(#jira-b)"/>
+              <rect x="12.5" y="12.5" width="7" height="7" rx="0.5" transform="rotate(45 16 16)" fill="#2684FF"/>
+            </svg>
+          </template>
+          <template v-else>{{ tool.icon }}</template>
+        </span>
         <span class="nav-label">{{ tool.label }}</span>
       </button>
     </div>
@@ -82,7 +101,8 @@ const { mode, cycleTheme, themeIcon } = useTheme()
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
 .nav-btn.active { background: var(--accent); color: #fff; }
 
-.nav-icon { font-size: 16px; line-height: 1; }
+.nav-icon { font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.nav-icon .jira-icon { width: 1.4em; height: 1.4em; display: block; }
 .nav-label { font-size: 9px; font-weight: 500; }
 
 .settings-btn { margin-top: auto; opacity: 0.8; }

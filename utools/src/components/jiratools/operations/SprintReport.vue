@@ -11,8 +11,8 @@
           <InputWithHistory ref="userRef" v-model="user" storageKey="sprint-user" placeholder="xchen17" required />
         </div>
         <div class="form-group">
-          <label>Sprint label</label>
-          <InputWithHistory ref="labelRef" v-model="label" storageKey="sprint-label" placeholder="SDS-CP-Sprint08-2026" required />
+          <label>Sprint label(s)</label>
+          <InputWithHistory ref="labelRef" v-model="label" storageKey="sprint-label" placeholder="Sprint08-2026,Sprint07-2026" required />
         </div>
       </div>
       <div class="form-footer">
@@ -26,10 +26,17 @@
       </div>
     </form>
 
+    <!-- Dashboard (always visible above tabs) -->
+    <WorklogDashboard :dailyLog="dailyLog" :weeklyLog="weeklyLog" :labels="labels" :appState="appState" />
+
     <!-- Tab bar -->
     <div class="tab-bar">
       <button class="tab-btn" :class="{ active: activeTab === 'tickets' }" @click="setTab('tickets')">📊 Tickets</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'dashboard' }" @click="setTab('dashboard')">📈 Dashboard</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="setTab('logs')">
+        📋 Logs
+        <span class="tab-count">({{ lines.length }})</span>
+        <span v-if="appState === 'loading'" class="tab-running">●</span>
+      </button>
     </div>
 
     <!-- Table area -->
@@ -37,29 +44,9 @@
       <TicketTable :data="tableData ?? emptyData" :appState="appState" />
     </div>
 
-    <!-- Dashboard area -->
-    <div v-show="activeTab === 'dashboard'" class="table-area">
-      <WorklogChart v-if="dailyLog.length" :dailyLog="dailyLog" />
-      <div v-else class="output-empty">
-        <template v-if="appState === 'idle'">Run a sprint report to see the dashboard.</template>
-        <template v-else-if="appState === 'loading'">⏳ Fetching worklog data…</template>
-        <template v-else>No worklog data found for this sprint.</template>
-      </div>
-    </div>
-
-    <!-- Collapsible log area -->
-    <div class="log-section" :class="{ collapsed: logCollapsed }">
-      <div class="log-header" @click="toggleLog">
-        <span class="log-title">
-          📋 Logs
-          <span class="log-count">({{ lines.length }})</span>
-          <span v-if="appState === 'loading'" class="log-running">●</span>
-        </span>
-        <span class="log-toggle">{{ logCollapsed ? '▲' : '▼' }}</span>
-      </div>
-      <div class="log-body">
-        <LogViewer :lines="lines" />
-      </div>
+    <!-- Logs area -->
+    <div v-show="activeTab === 'logs'" class="table-area log-area">
+      <LogViewer :lines="lines" :running="appState === 'loading'" />
     </div>
   </div>
 </template>
@@ -68,7 +55,7 @@
 import { ref, onMounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
-import WorklogChart from './WorklogChart.vue'
+import WorklogDashboard from './WorklogDashboard.vue'
 import InputWithHistory from '../../shared/InputWithHistory.vue'
 
 const jiraBin  = ref('')
@@ -83,13 +70,15 @@ const labelRef = ref(null)
 const appState    = ref('idle')
 const tableData   = ref(null)
 const dailyLog    = ref([])
+const weeklyLog   = ref([])
+const labels      = ref([])
 const lines       = ref([])
 const configHint  = ref('')
-const logCollapsed = ref(false)
 const activeTab   = ref('tickets')
 
-const LOG_KEY = 'sprint-log-expanded:v1'
-const TAB_KEY = 'sprint-active-tab:v1'
+const PREF_USER  = 'sprint-default-user:v1'
+const PREF_LABEL = 'sprint-default-label:v1'
+const TAB_KEY    = 'sprint-active-tab:v1'
 const LOG_LIMIT = 500
 
 const emptyData = { tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {} }
@@ -100,27 +89,25 @@ function setTab(tab) {
 }
 
 onMounted(() => {
-  // Read all jira config from uTools DB settings
   jiraBin.value = window.myscriptAPI?.getSetting('jira_bin') ?? ''
-  user.value    = window.myscriptAPI?.getSetting('jira_user') ?? ''
-  label.value   = window.myscriptAPI?.getSetting('jira_label') ?? ''
+
+  // Saved defaults from last run take priority; fall back to Settings values
+  user.value  = window.myscriptAPI?.getPref(PREF_USER)
+             ?? window.myscriptAPI?.getSetting('jira_user')
+             ?? ''
+  label.value = window.myscriptAPI?.getPref(PREF_LABEL)
+             ?? window.myscriptAPI?.getSetting('jira_label')
+             ?? ''
 
   const configured = jiraBin.value && user.value && label.value
   configHint.value = configured
     ? 'Config loaded from ⚙️ Settings'
     : 'Configure Jira settings in ⚙️ Settings page'
 
-  // Restore log collapsed state and active tab
-  const saved = window.myscriptAPI?.getPref(LOG_KEY)
-  if (saved !== null) logCollapsed.value = !saved
+  // Restore active tab (coerce stale values like 'dashboard' to 'tickets')
   const savedTab = window.myscriptAPI?.getPref(TAB_KEY)
-  if (savedTab) activeTab.value = savedTab
+  if (savedTab === 'tickets' || savedTab === 'logs') activeTab.value = savedTab
 })
-
-function toggleLog() {
-  logCollapsed.value = !logCollapsed.value
-  window.myscriptAPI?.setPref(LOG_KEY, !logCollapsed.value)
-}
 
 function pushLog(line) {
   if (lines.value.length < LOG_LIMIT) {
@@ -136,6 +123,10 @@ function run() {
   userRef.value?.push(user.value)
   labelRef.value?.push(label.value)
 
+  // Persist as defaults for next session
+  window.myscriptAPI?.setPref(PREF_USER, user.value)
+  window.myscriptAPI?.setPref(PREF_LABEL, label.value)
+
   if (!window.myscriptAPI?.isReady()) {
     lines.value = ['[error] Project root not found. Run: make install inside the myscript directory.']
     appState.value = 'error'
@@ -149,11 +140,17 @@ function run() {
   lines.value   = []
   tableData.value = null
   dailyLog.value  = []
+  weeklyLog.value = []
+  labels.value    = []
   appState.value  = 'loading'
   jobId.value   = crypto.randomUUID()
+  activeTab.value = 'logs'   // auto-jump to logs while running
 
   const jiraUrl = window.myscriptAPI?.getSetting('jira_url') ?? ''
-  const args = ['--jira-bin', jiraBin.value, '--user', user.value, '--label', label.value, '--json']
+  // Split comma-separated labels into multiple --label args
+  const labelList = label.value.split(',').map(l => l.trim()).filter(Boolean)
+  const args = ['--jira-bin', jiraBin.value, '--user', user.value, '--json']
+  for (const lbl of labelList) args.push('--label', lbl)
   if (jiraUrl) args.push('--jira-url', jiraUrl)
 
   try {
@@ -176,7 +173,10 @@ function run() {
             const parsed = JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length))
             tableData.value = parsed
             dailyLog.value  = parsed.daily_log ?? []
+            weeklyLog.value = parsed.weekly_log ?? []
+            labels.value    = parsed.meta?.labels ?? label.value.split(',').map(l => l.trim()).filter(Boolean)
             appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
+            if (appState.value === 'done') activeTab.value = 'tickets'  // auto-jump to results
           } catch (e) {
             pushLog(`[error] Failed to parse table data: ${e.message}`)
             appState.value = 'error'
@@ -212,7 +212,8 @@ function stop() {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  border-bottom: 2px solid var(--border);
   flex-shrink: 0;
 }
 
@@ -237,20 +238,22 @@ function stop() {
 /* ── Tab bar ─────────────────────────────────────────────────────────────── */
 .tab-bar {
   display: flex;
+  align-items: center;
   gap: 2px;
-  padding: 6px 12px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+  background: var(--bg2);
+  border-bottom: 2px solid var(--border);
   flex-shrink: 0;
 }
 .tab-btn {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 5px 14px 7px;
+  padding: 7px 14px 9px;
   font-size: 12px;
   color: var(--text2);
   cursor: pointer;
-  margin-bottom: -1px;
+  margin-bottom: -2px;
   transition: color 0.15s, border-color 0.15s;
 }
 .tab-btn:hover { color: var(--fg); }
@@ -258,69 +261,22 @@ function stop() {
 
 /* ── Table area ───────────────────────────────────────────────────────────── */
 .table-area {
-  flex: 2;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.output-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   flex: 1;
-  color: var(--text2);
-  font-size: 13px;
-  padding: 40px;
-}
-
-/* ── Log section ──────────────────────────────────────────────────────────── */
-.log-section {
-  flex: 1 0 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border);
-  min-height: 0;
   overflow: hidden;
+  min-height: 0;
 }
 
-/* When collapsed: shrink to header only so table reclaims the space */
-.log-section.collapsed {
-  flex: 0 0 auto;
-}
-
-.log-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--text2);
-  background: var(--bg2);
-  user-select: none;
-  flex-shrink: 0;
-}
-.log-header:hover { background: var(--bg3); }
-
-.log-title { display: flex; align-items: center; gap: 5px; }
-.log-count { opacity: 0.7; }
-.log-running { color: var(--accent); animation: blink 1s infinite; }
+/* ── Logs tab ─────────────────────────────────────────────────────────────── */
+.tab-count { opacity: 0.6; font-size: 10px; }
+.tab-running { color: var(--accent); animation: blink 1s infinite; margin-left: 2px; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
 
-.log-toggle { font-size: 10px; }
-
-.log-body {
-  flex: 1;
-  overflow: hidden;
-  max-height: 1000px;
-  transition: max-height 0.2s ease-in-out;
+.log-area {
+  padding: 0;
 }
-.log-section.collapsed .log-body { max-height: 0; }
-
-:deep(.log-viewer) {
-  border-radius: 0;
+.log-area :deep(.log-viewer) {
   height: 100%;
 }
 </style>
