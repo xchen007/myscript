@@ -269,10 +269,8 @@ function run() {
 
 <style scoped>
 .sprint-report {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 /* ── Inline header bar ───────────────────────────────────────────────────── */
@@ -470,12 +468,8 @@ function run() {
 
 /* ── Table area ───────────────────────────────────────────────────────────── */
 .table-area {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-  min-width: 0;
 }
 
 /* ── Logs tab ─────────────────────────────────────────────────────────────── */

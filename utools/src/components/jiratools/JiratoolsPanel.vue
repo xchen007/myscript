@@ -80,7 +80,7 @@ onUnmounted(() => {
 
 <style scoped>
 .panel { display: flex; flex: 1; overflow: hidden; }
-.panel-right { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.panel-right { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
 
 .resize-handle {
   width: 4px;

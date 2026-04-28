@@ -166,6 +166,7 @@
         <!-- Multi-select chip filters -->
         <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
           <span class="cf-label">{{ fd.label }}</span>
+          <span v-if="!dropFilters[fd.key].length" class="cf-all">All</span>
           <span
             v-for="val in dropFilters[fd.key]"
             :key="val"
@@ -176,18 +177,29 @@
 
           <!-- Dropdown (opens upward) -->
           <div class="cf-dd cf-dd-up" v-show="openDd === fd.key" @click.stop>
+            <!-- Search input -->
+            <div class="cf-dd-search">
+              <span class="cf-dd-search-icon">🔍</span>
+              <input
+                v-model="ddSearch[fd.key]"
+                class="cf-dd-search-input"
+                placeholder="Search…"
+                @click.stop
+              />
+            </div>
+            <div class="cf-dd-sep" />
             <div
               class="cf-dd-item cf-dd-sel"
               @click="toggleAllFilter(fd.key, fd.options())"
             >
-              <span class="cf-ck" :class="{ on: dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 }">
-                {{ dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 ? '✓' : '' }}
+              <span class="cf-ck" :class="{ on: dropFilters[fd.key].length === fd.options().length && fd.options().length > 0, half: dropFilters[fd.key].length > 0 && dropFilters[fd.key].length < fd.options().length }">
+                {{ dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 ? '✓' : dropFilters[fd.key].length > 0 ? '−' : '' }}
               </span>
               {{ dropFilters[fd.key].length ? `Selected (${dropFilters[fd.key].length})` : 'All' }}
             </div>
             <div class="cf-dd-sep" />
             <div
-              v-for="opt in fd.options()"
+              v-for="opt in filteredOpts(fd)"
               :key="opt"
               class="cf-dd-item"
               @click="toggleFilter(fd.key, opt)"
@@ -197,6 +209,7 @@
               </span>
               {{ opt }}
             </div>
+            <div v-if="filteredOpts(fd).length === 0" class="cf-dd-empty">No match</div>
           </div>
         </div>
 
@@ -290,6 +303,7 @@ const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
 const dropFilters  = reactive({ type: [], status: [], priority: [], assignee: [] })
 const openDd       = ref('')
+const ddSearch     = reactive({ type: '', status: '', priority: '', assignee: '' })
 
 const orderedColumns = computed(() =>
   colOrder.value
@@ -450,8 +464,16 @@ function toggleRow(key) {
 }
 
 // ── Dropdowns ─────────────────────────────────────────────────────────────────
-function toggleDd(key) { openDd.value = openDd.value === key ? '' : key }
-function closeDd()     { openDd.value = '' }
+function toggleDd(key) {
+  if (openDd.value === key) { openDd.value = ''; ddSearch[key] = '' }
+  else { openDd.value = key; ddSearch[key] = '' }
+}
+function closeDd() { if (openDd.value && ddSearch[openDd.value] !== undefined) ddSearch[openDd.value] = ''; openDd.value = '' }
+function filteredOpts(fd) {
+  const all = fd.options()
+  const q = (ddSearch[fd.key] || '').toLowerCase()
+  return q ? all.filter(o => o.toLowerCase().includes(q)) : all
+}
 function toggleFilter(field, val) {
   const arr = dropFilters[field]
   const idx = arr.indexOf(val)
@@ -586,9 +608,6 @@ onMounted(loadPrefs)
   display: flex;
   flex-direction: column;
   gap: 0;
-  overflow: hidden;
-  flex: 1;
-  min-height: 0;
 }
 
 /* ── Stats bar ────────────────────────────────────────────────────────────── */
@@ -691,12 +710,13 @@ onMounted(loadPrefs)
 
 /* ── Table ────────────────────────────────────────────────────────────────── */
 .table-wrap {
-  flex: 1; display: flex; flex-direction: column;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border); border-radius: 6px;
-  overflow: hidden; background: var(--bg2); min-height: 0;
+  overflow: hidden; background: var(--bg2);
   margin: 0 10px 10px;
 }
-.table-scroll { overflow: auto; flex: 1; min-height: 0; }
+.table-scroll { overflow-x: auto; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 
@@ -737,6 +757,12 @@ thead th.sortable:hover { color: var(--text); background: var(--bg4); }
   white-space: nowrap;
   border-right: 1px solid var(--border);
 }
+.cf-all {
+  padding: 4px 6px;
+  color: var(--text3);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .cf-chip {
   display: inline-flex; align-items: center; gap: 2px;
   padding: 2px 2px 2px 6px;
@@ -775,6 +801,19 @@ thead th.sortable:hover { color: var(--text); background: var(--bg4); }
   font-size: 10px; flex-shrink: 0; transition: background 0.1s;
 }
 .cf-ck.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cf-ck.half { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Search inside dropdown */
+.cf-dd-search {
+  display: flex; align-items: center; gap: 4px; padding: 4px 8px;
+}
+.cf-dd-search-icon { font-size: 12px; flex-shrink: 0; opacity: .6; }
+.cf-dd-search-input {
+  flex: 1; border: none; outline: none; background: transparent;
+  color: var(--text); font-size: 12px; padding: 3px 0; min-width: 0;
+}
+.cf-dd-search-input::placeholder { color: var(--text3); }
+.cf-dd-empty { padding: 8px 10px; color: var(--text3); font-size: 12px; text-align: center; }
 
 .sort-ind { display: inline-flex; align-items: center; gap: 1px; margin-left: 4px; color: var(--accent); font-size: 11px; font-weight: 700; }
 .sort-ord { font-size: 9px; color: var(--accent2, #2d6fc4); }
