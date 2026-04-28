@@ -41,6 +41,7 @@
         @click="run"
       >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
       <button v-if="appState === 'loading'" class="btn sprint-stop-btn" @click="stop">■</button>
+      <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
       <!-- Auto-refresh controls -->
       <div class="ar-group">
@@ -58,12 +59,6 @@
           {{ isRefreshing ? '⏳' : `${nextRefreshIn}s` }}
         </span>
       </div>
-    </div>
-
-    <!-- Status bar: last updated -->
-    <div v-if="lastUpdated" class="status-bar">
-      <span class="last-updated">🕐 Last updated: {{ lastUpdated }}</span>
-      <span v-if="autoRefresh && isRefreshing" class="refreshing-hint">🔄 Refreshing…</span>
     </div>
 
     <div v-if="!jiraBin" class="config-warn-bar">
@@ -158,7 +153,9 @@ const weeklyLog   = ref([])
 const labels      = ref([])
 const lines       = ref([])
 const activeTab   = ref('tickets')
-const lastUpdated = ref('')
+const lastUpdatedAt = ref(0)   // epoch ms
+const agoTick     = ref(0)     // triggers recompute
+let agoTimer = null
 
 const PREF_USER     = 'sprint-default-user:v1'
 const PREF_LABEL    = 'sprint-default-label:v1'
@@ -188,7 +185,7 @@ function applyRefreshData(parsed) {
   dailyLog.value   = parsed.daily_log ?? []
   weeklyLog.value  = parsed.weekly_log ?? []
   labels.value     = parsed.meta?.labels ?? labelArr.value
-  lastUpdated.value = fmtNow()
+  stampNow()
   if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
     appState.value = 'done'
   }
@@ -258,12 +255,28 @@ function onIntervalChange(val) {
   if (autoRefresh.value) startRefreshTimer()
 }
 
-onUnmounted(() => stopRefreshTimer())
+onUnmounted(() => {
+  stopRefreshTimer()
+  if (agoTimer) clearInterval(agoTimer)
+})
 
-function fmtNow() {
-  const d = new Date()
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+function stampNow() {
+  lastUpdatedAt.value = Date.now()
+  if (!agoTimer) {
+    agoTimer = setInterval(() => { agoTick.value++ }, 10_000)
+  }
 }
+const agoText = computed(() => {
+  void agoTick.value
+  if (!lastUpdatedAt.value) return ''
+  const secs = Math.floor((Date.now() - lastUpdatedAt.value) / 1000)
+  if (secs < 10) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  return `${hrs}h${mins % 60}m ago`
+})
 
 const emptyData = { tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {} }
 
@@ -363,7 +376,7 @@ function run() {
             weeklyLog.value = parsed.weekly_log ?? []
             labels.value    = parsed.meta?.labels ?? labelArr.value
             appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
-            lastUpdated.value = fmtNow()
+            stampNow()
             if (appState.value === 'done') {
               activeTab.value = 'tickets'
               if (autoRefresh.value) startRefreshTimer()
@@ -430,8 +443,8 @@ function stop() {
 
 /* Label chips + type-to-add ─────────────────────────────────────────────── */
 .sprint-labels-wrap {
-  flex: 1;
-  min-width: 0;
+  max-width: 360px;
+  min-width: 120px;
   position: relative;
 }
 .sprint-labels {
@@ -599,6 +612,13 @@ function stop() {
 .log-area :deep(.log-viewer) { height: 100%; }
 
 /* ── Auto-refresh controls ──────────────────────────────────────────────── */
+.ago-hint {
+  font-size: 11px;
+  color: var(--fg-dim, var(--fg));
+  opacity: 0.55;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .ar-group {
   display: flex;
   align-items: center;
@@ -634,24 +654,5 @@ function stop() {
   min-width: 30px;
 }
 
-/* ── Status bar ─────────────────────────────────────────────────────────── */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 2px 12px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.last-updated {
-  font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.7;
-}
-.refreshing-hint {
-  font-size: 11px;
-  color: var(--accent);
-  animation: blink 1s infinite;
-}
+
 </style>

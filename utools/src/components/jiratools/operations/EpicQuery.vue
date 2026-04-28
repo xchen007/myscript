@@ -20,6 +20,7 @@
         @click="run"
       >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
       <button v-if="appState === 'loading'" class="btn epic-stop-btn" @click="stop">■</button>
+      <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
       <!-- Auto-refresh controls -->
       <div class="ar-group">
@@ -37,12 +38,6 @@
           {{ isRefreshing ? '⏳' : `${nextRefreshIn}s` }}
         </span>
       </div>
-    </div>
-
-    <!-- Status bar: last updated -->
-    <div v-if="lastUpdated" class="status-bar">
-      <span class="last-updated">🕐 Last updated: {{ lastUpdated }}</span>
-      <span v-if="autoRefresh && isRefreshing" class="refreshing-hint">🔄 Refreshing…</span>
     </div>
 
     <div v-if="!jiraBin" class="config-warn-bar">
@@ -77,7 +72,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
 
@@ -90,7 +85,9 @@ const appState    = ref('idle')
 const tableData   = ref(null)
 const lines       = ref([])
 const activeTab   = ref('tickets')
-const lastUpdated = ref('')
+const lastUpdatedAt = ref(0)
+const agoTick     = ref(0)
+let agoTimer = null
 
 // Auto-refresh state
 const autoRefresh       = ref(false)
@@ -111,10 +108,23 @@ const emptyData = {
   tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {}
 }
 
-function fmtNow() {
-  const d = new Date()
-  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+function stampNow() {
+  lastUpdatedAt.value = Date.now()
+  if (!agoTimer) {
+    agoTimer = setInterval(() => { agoTick.value++ }, 10_000)
+  }
 }
+const agoText = computed(() => {
+  void agoTick.value
+  if (!lastUpdatedAt.value) return ''
+  const secs = Math.floor((Date.now() - lastUpdatedAt.value) / 1000)
+  if (secs < 10) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  return `${hrs}h${mins % 60}m ago`
+})
 
 function setTab(tab) {
   activeTab.value = tab
@@ -132,7 +142,7 @@ function buildArgs() {
 /* ── Auto-refresh helpers ────────────────────────────────────────────────── */
 function applyRefreshData(parsed) {
   tableData.value = parsed
-  lastUpdated.value = fmtNow()
+  stampNow()
   if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
     appState.value = 'done'
   }
@@ -199,7 +209,10 @@ function onIntervalChange(val) {
   if (autoRefresh.value) startRefreshTimer()
 }
 
-onUnmounted(() => stopRefreshTimer())
+onUnmounted(() => {
+  stopRefreshTimer()
+  if (agoTimer) clearInterval(agoTimer)
+})
 
 onMounted(() => {
   jiraBin.value = window.myscriptAPI?.getSetting('jira_bin') ?? ''
@@ -265,7 +278,7 @@ function run() {
             const parsed = JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length))
             tableData.value = parsed
             appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
-            lastUpdated.value = fmtNow()
+            stampNow()
             if (appState.value === 'done') {
               activeTab.value = 'tickets'
               if (autoRefresh.value) startRefreshTimer()
@@ -322,8 +335,8 @@ function stop() {
   background: var(--bg);
   color: var(--fg);
 }
-.epic-key-input { width: 200px; }
-.epic-filter-input { width: 180px; }
+.epic-key-input { width: 180px; }
+.epic-filter-input { width: 160px; }
 .epic-run-btn {
   background: var(--accent); color: #fff; border: none;
   padding: 4px 14px; border-radius: var(--radius);
@@ -364,6 +377,13 @@ function stop() {
 .log-area { overflow-y: auto; }
 
 /* ── Auto-refresh controls ──────────────────────────────────────────────── */
+.ago-hint {
+  font-size: 11px;
+  color: var(--fg-dim, var(--fg));
+  opacity: 0.55;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .ar-group {
   display: flex;
   align-items: center;
@@ -399,24 +419,5 @@ function stop() {
   min-width: 30px;
 }
 
-/* ── Status bar ─────────────────────────────────────────────────────────── */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 2px 12px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.last-updated {
-  font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.7;
-}
-.refreshing-hint {
-  font-size: 11px;
-  color: var(--accent);
-  animation: pulse 1s infinite;
-}
+
 </style>
