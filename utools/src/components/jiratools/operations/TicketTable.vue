@@ -148,7 +148,7 @@
                     <span :class="typeCls(row.type)" class="badge">{{ typeIcon(row.type) }}{{ row.type }}</span>
                   </template>
                   <template v-else-if="col.id === 'status'">
-                    <span :class="statusCls(row.status)" class="badge">{{ row.status }}</span>
+                    <span :class="statusCls(row.status)" class="badge">{{ statusIcon(row.status) }}{{ row.status }}</span>
                   </template>
                   <template v-else-if="col.id === 'priority'">
                     <span :class="priorityCls(row.priority)" class="badge">{{ priorityIcon(row.priority) }}{{ row.priority }}</span>
@@ -178,7 +178,7 @@
                         <div class="di">
                           <div class="dl">状态 / 优先级 / 类型</div>
                           <div class="dv badge-row">
-                            <span :class="statusCls(row.status)" class="badge">{{ row.status }}</span>
+                            <span :class="statusCls(row.status)" class="badge">{{ statusIcon(row.status) }}{{ row.status }}</span>
                             <span :class="priorityCls(row.priority)" class="badge">{{ priorityIcon(row.priority) }}{{ row.priority }}</span>
                             <span :class="typeCls(row.type)" class="badge">{{ typeIcon(row.type) }}{{ row.type }}</span>
                           </div>
@@ -362,7 +362,7 @@ const assigneeOptions = computed(() => {
 
 const FILTER_DEFS = computed(() => [
   { key: 'type',     label: 'Type',     options: () => typeOptions.value,     badgeCls: typeCls,     badgeIcon: typeIcon },
-  { key: 'status',   label: 'Status',   options: () => statusOptions.value,   badgeCls: statusCls,   badgeIcon: () => '' },
+  { key: 'status',   label: 'Status',   options: () => statusOptions.value,   badgeCls: statusCls,   badgeIcon: statusIcon },
   { key: 'priority', label: 'Priority', options: () => priorityOptions.value, badgeCls: priorityCls, badgeIcon: priorityIcon },
   { key: 'assignee', label: 'Assignee', options: () => assigneeOptions.value, badgeCls: () => '',    badgeIcon: () => '' },
 ])
@@ -418,6 +418,7 @@ function statusDotCls(st) {
   return {
     'sdot-inprog':  st === 'In Progress',
     'sdot-review':  st === 'In Review',
+    'sdot-reopen':  st === 'Reopened',
     'sdot-done':    st === 'Resolved' || st === 'Closed' || st === 'Done',
     'sdot-blocked': st === 'Blocked',
   }
@@ -566,12 +567,14 @@ function formatDesc(text) {
 
 
 function typeCls(t)     { return { 'bg': true, 'bt': t === 'Bug', 'bs': t === 'Story', 'bta': t === 'Task', 'be': t === 'Epic' } }
-function statusCls(s)   { return { 'bg': true, 'bst': s === 'To Do' || s === 'Open', 'bip': s === 'In Progress', 'bir': s === 'In Review', 'bdo': s === 'Resolved' || s === 'Closed' || s === 'Done', 'bbl': s === 'Blocked' } }
+function statusCls(s)   { return { 'bg': true, 'bst': s === 'To Do' || s === 'Open', 'bre': s === 'Reopened', 'bip': s === 'In Progress', 'bir': s === 'In Review', 'bdo': s === 'Resolved' || s === 'Closed' || s === 'Done', 'bbl': s === 'Blocked' } }
 function priorityCls(p) { return { 'bg': true, 'bcr': p === 'Blocker' || p === 'Critical' || p === 'Highest', 'bhi': p === 'High' || p === 'Major', 'bme': p === 'Medium' || p === 'Normal', 'blo': p === 'Minor' || p === 'Low' || p === 'Trivial' || p === 'Lowest' } }
 
-const TYPE_ICONS     = { Bug: '🐛 ', Story: '📖 ', Task: '✓ ', Epic: '⚡ ' }
+const TYPE_ICONS     = { Bug: '🐛 ', Story: '📖 ', Task: '✅ ', Epic: '⚡ ', 'User Story': '📖 ', 'Sub-task': '🔹 ' }
+const STATUS_ICONS   = { Open: '○ ', Reopened: '⟳ ', 'In Progress': '◉ ', 'In Review': '◎ ', Resolved: '✔ ', Closed: '● ', Done: '✔ ', 'To Do': '○ ', Blocked: '⊘ ' }
 const PRIORITY_ICONS = { Blocker: '🔴 ', Critical: '🔴 ', Highest: '🔴 ', High: '🟠 ', Major: '🟠 ', Medium: '🔵 ', Normal: '🔵 ', Minor: '⚪ ', Low: '⚪ ', Trivial: '⚪ ', Lowest: '⚪ ' }
 function typeIcon(t)     { return TYPE_ICONS[t] ?? '' }
+function statusIcon(s)   { return STATUS_ICONS[s] ?? '' }
 function priorityIcon(p) { return PRIORITY_ICONS[p] ?? '' }
 
 // ── Avatar ────────────────────────────────────────────────────────────────────
@@ -624,6 +627,7 @@ onMounted(loadPrefs)
 .sdot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); display: inline-block; }
 .sdot-inprog  { background: var(--accent); }
 .sdot-review  { background: var(--yellow); }
+.sdot-reopen  { background: #db61a2; }
 .sdot-done    { background: var(--green); }
 .sdot-blocked { background: var(--red); }
 
@@ -841,6 +845,7 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 .be  { background: rgba(163,113,247,.11);color: #a371f7; border-color: rgba(163,113,247,.22); }
 /* status */
 .bst { background: rgba(99,110,123,.18); color: #8b949e; border-color: rgba(99,110,123,.28); }
+.bre { background: rgba(219,97,162,.11); color: #db61a2; border-color: rgba(219,97,162,.25); }
 .bip { background: rgba(79,158,255,.11); color: #4f9eff; border-color: rgba(79,158,255,.25); }
 .bir { background: rgba(210,153,34,.11); color: #d29922; border-color: rgba(210,153,34,.25); }
 .bdo { background: rgba(63,185,80,.09);  color: #3fb950; border-color: rgba(63,185,80,.2); }

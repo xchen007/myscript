@@ -1,5 +1,5 @@
 <template>
-  <div class="epic-query">
+  <div class="epic-query" @click="arDdOpen = false">
     <!-- Header: title + inputs + run -->
     <div class="epic-header">
       <span class="epic-title">🏷️ Epic Query</span>
@@ -20,23 +20,40 @@
         @click="run"
       >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
       <button v-if="appState === 'loading'" class="btn epic-stop-btn" @click="stop">■</button>
+      <span class="header-spacer" />
       <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
-      <!-- Auto-refresh controls -->
-      <div class="ar-group">
+      <!-- Auto-refresh dropdown (Grafana style) -->
+      <div class="ar-dd-wrap" @click.stop>
         <button
-          class="btn ar-toggle"
-          :class="{ on: autoRefresh }"
+          class="btn ar-dd-btn"
+          :class="{ active: autoRefresh }"
           :disabled="!jiraBin || !epicKey.trim()"
-          title="Auto-refresh"
-          @click="toggleAutoRefresh"
-        >🔄</button>
-        <select v-if="autoRefresh" class="ar-select" :value="refreshIntervalMin" @change="onIntervalChange($event.target.value)">
-          <option v-for="m in [1,2,5,10,15,30]" :key="m" :value="m">{{ m }}m</option>
-        </select>
-        <span v-if="autoRefresh" class="ar-countdown" :title="isRefreshing ? 'Refreshing…' : `Next in ${nextRefreshIn}s`">
-          {{ isRefreshing ? '⏳' : `${nextRefreshIn}s` }}
-        </span>
+          @click.stop="arDdOpen = !arDdOpen"
+        >
+          🔄 Refresh
+          <span class="ar-interval-badge">{{ autoRefresh ? `${refreshIntervalMin}m` : 'Off' }}</span>
+          <span v-if="autoRefresh" class="ar-countdown-badge">{{ isRefreshing ? '…' : `${nextRefreshIn}s` }}</span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="ar-dd-menu" v-show="arDdOpen">
+          <div
+            class="ar-dd-item"
+            :class="{ sel: !autoRefresh }"
+            @click="setArInterval(null)"
+          >
+            <span class="ar-chk">{{ !autoRefresh ? '✓' : '' }}</span> Off
+          </div>
+          <div
+            v-for="m in [1, 2, 5, 10, 15, 30]"
+            :key="m"
+            class="ar-dd-item"
+            :class="{ sel: autoRefresh && refreshIntervalMin === m }"
+            @click="setArInterval(m)"
+          >
+            <span class="ar-chk">{{ autoRefresh && refreshIntervalMin === m ? '✓' : '' }}</span> {{ m }}m
+          </div>
+        </div>
       </div>
     </div>
 
@@ -90,11 +107,12 @@ const agoTick     = ref(0)
 let agoTimer = null
 
 // Auto-refresh state
-const autoRefresh       = ref(false)
+const autoRefresh        = ref(false)
 const refreshIntervalMin = ref(5)
-const isRefreshing      = ref(false)
-const nextRefreshIn     = ref(0)
-let refreshTimer  = null
+const isRefreshing       = ref(false)
+const nextRefreshIn      = ref(0)
+const arDdOpen           = ref(false)
+let refreshTimer   = null
 let countdownTimer = null
 
 const PREF_EPIC   = 'epic-default-key:v1'
@@ -196,17 +214,21 @@ function stopRefreshTimer() {
   nextRefreshIn.value = 0
 }
 
-function toggleAutoRefresh() {
-  autoRefresh.value = !autoRefresh.value
-  window.myscriptAPI?.setPref(PREF_AR, autoRefresh.value)
-  autoRefresh.value ? startRefreshTimer() : stopRefreshTimer()
-}
-
-function onIntervalChange(val) {
-  const v = Math.max(1, Math.min(60, Number(val) || 5))
-  refreshIntervalMin.value = v
-  window.myscriptAPI?.setPref(PREF_AR_MIN, v)
-  if (autoRefresh.value) startRefreshTimer()
+// Unified setter: null = Off, number = interval in minutes
+function setArInterval(intervalMin) {
+  arDdOpen.value = false
+  if (intervalMin === null) {
+    autoRefresh.value = false
+    window.myscriptAPI?.setPref(PREF_AR, false)
+    stopRefreshTimer()
+  } else {
+    const v = Math.max(1, Math.min(60, Number(intervalMin) || 5))
+    refreshIntervalMin.value = v
+    window.myscriptAPI?.setPref(PREF_AR_MIN, v)
+    autoRefresh.value = true
+    window.myscriptAPI?.setPref(PREF_AR, true)
+    startRefreshTimer()
+  }
 }
 
 onUnmounted(() => {
@@ -375,7 +397,7 @@ function stop() {
 .table-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .log-area { overflow-y: auto; }
 
-/* ── Auto-refresh controls ──────────────────────────────────────────────── */
+/* ── ago hint + auto-refresh ────────────────────────────────────────────── */
 .ago-hint {
   font-size: 11px;
   color: var(--fg-dim, var(--fg));
@@ -383,40 +405,78 @@ function stop() {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.ar-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 4px;
+.header-spacer { flex: 1; }
+
+/* Grafana-style refresh dropdown */
+.ar-dd-wrap {
+  position: relative;
   flex-shrink: 0;
 }
-.ar-toggle {
+.ar-dd-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
-  padding: 2px 6px;
-  opacity: 0.6;
-  transition: opacity 0.15s;
-}
-.ar-toggle.on {
-  opacity: 1;
-  background: var(--accent);
-  color: #fff;
-  border-radius: 4px;
-}
-.ar-select {
-  height: 24px;
-  font-size: 11px;
-  padding: 0 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
 }
-.ar-countdown {
+.ar-dd-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ar-dd-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ar-interval-badge {
   font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.7;
-  min-width: 30px;
+  font-weight: 600;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 5px;
+  line-height: 18px;
 }
+.ar-dd-btn.active .ar-interval-badge {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ar-countdown-badge {
+  font-size: 10px;
+  opacity: 0.6;
+  min-width: 24px;
+  text-align: right;
+}
+.ar-dd-btn .chev { font-size: 10px; opacity: 0.7; }
+
+.ar-dd-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 90px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  z-index: 200;
+  overflow: hidden;
+}
+.ar-dd-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.ar-dd-item:hover { background: var(--bg2); }
+.ar-dd-item.sel { color: var(--accent); font-weight: 600; }
+.ar-chk { width: 12px; font-size: 11px; }
 
 
 </style>
