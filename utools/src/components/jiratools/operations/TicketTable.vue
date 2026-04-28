@@ -20,28 +20,40 @@
 
     <!-- ── Toolbar ────────────────────────────────────────────────────── -->
     <div class="toolbar" @click.stop>
-      <!-- Filter dropdowns -->
-      <div v-for="fd in FILTER_DEFS" :key="fd.key" class="dropdown filter-dd">
-        <button
-          class="btn"
-          :class="{ active: dropFilters[fd.key] }"
-          @click.stop="toggleDd(fd.key)"
-        >
-          {{ dropFilters[fd.key] || fd.label }}<span class="chev">▾</span>
-        </button>
-        <div class="dd-menu filter-menu" v-show="openDd === fd.key" @click.stop>
+      <!-- Multi-select chip filters -->
+      <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
+        <span class="cf-label">{{ fd.label }}</span>
+        <span
+          v-for="val in dropFilters[fd.key]"
+          :key="val"
+          class="cf-chip"
+        >{{ val }}<button class="cf-chip-rm" @click.stop="removeChip(fd.key, val)">×</button></span>
+        <button v-if="dropFilters[fd.key].length" class="cf-clear" @click.stop="clearFilter(fd.key)">×</button>
+        <button class="cf-toggle" @click.stop="toggleDd(fd.key)">▾</button>
+
+        <!-- Dropdown -->
+        <div class="cf-dd" v-show="openDd === fd.key" @click.stop>
           <div
-            class="dd-item"
-            :class="{ sel: !dropFilters[fd.key] }"
-            @click="setFilter(fd.key, '')"
-          >All</div>
+            class="cf-dd-item cf-dd-sel"
+            @click="toggleAllFilter(fd.key, fd.options())"
+          >
+            <span class="cf-ck" :class="{ on: dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 }">
+              {{ dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 ? '✓' : '' }}
+            </span>
+            {{ dropFilters[fd.key].length ? `Selected (${dropFilters[fd.key].length})` : 'All' }}
+          </div>
+          <div class="cf-dd-sep" />
           <div
             v-for="opt in fd.options()"
             :key="opt"
-            class="dd-item"
-            :class="{ sel: dropFilters[fd.key] === opt }"
-            @click="setFilter(fd.key, opt)"
-          >{{ opt }}</div>
+            class="cf-dd-item"
+            @click="toggleFilter(fd.key, opt)"
+          >
+            <span class="cf-ck" :class="{ on: dropFilters[fd.key].includes(opt) }">
+              {{ dropFilters[fd.key].includes(opt) ? '✓' : '' }}
+            </span>
+            {{ opt }}
+          </div>
         </div>
       </div>
 
@@ -276,7 +288,7 @@ if (props.labelFilter !== undefined && props.labelFilter !== '') {
 }
 const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
-const dropFilters  = reactive({ type: '', status: '', priority: '', assignee: '' })
+const dropFilters  = reactive({ type: [], status: [], priority: [], assignee: [] })
 const openDd       = ref('')
 
 const orderedColumns = computed(() =>
@@ -290,7 +302,13 @@ function loadPrefs() {
   const saved = window.myscriptAPI?.getPref(PREF_KEY_REF.value) ?? {}
   if (Array.isArray(saved.sorting))     sorting.value = saved.sorting
   if (saved.colVis)                     Object.assign(colVis, saved.colVis)
-  if (saved.dropFilters)                Object.assign(dropFilters, saved.dropFilters)
+  if (saved.dropFilters) {
+    for (const k of Object.keys(dropFilters)) {
+      const v = saved.dropFilters[k]
+      const arr = Array.isArray(v) ? v : (v ? [v] : [])
+      dropFilters[k].splice(0, Infinity, ...arr)
+    }
+  }
   if (Array.isArray(saved.colOrder)) {
     // Merge: use saved order, append any new columns not in saved list
     const known = new Set(saved.colOrder)
@@ -305,7 +323,7 @@ function savePrefs() {
     sorting:     sorting.value,
     colVis:      { ...colVis },
     colOrder:    colOrder.value,
-    dropFilters: { ...dropFilters },
+    dropFilters: Object.fromEntries(Object.keys(dropFilters).map(k => [k, [...dropFilters[k]]])),
   })
 }
 
@@ -338,20 +356,13 @@ const FILTER_DEFS = computed(() => [
   { key: 'assignee', label: 'Assignee', options: () => assigneeOptions.value, badgeCls: () => '',    badgeIcon: () => '' },
 ])
 
-function filterDefForCol(colId) {
-  return FILTER_DEFS.value.find(fd => fd.key === colId) ?? null
-}
-const hasVisibleFilters = computed(() =>
-  FILTER_DEFS.value.some(fd => colVis[fd.key])
-)
-
 // ── Derived rows (filtered + sorted) ─────────────────────────────────────────
 const displayRows = computed(() => {
   let rows = props.data.tickets ?? []
-  if (dropFilters.type)     rows = rows.filter(t => t.type === dropFilters.type)
-  if (dropFilters.status)   rows = rows.filter(t => t.status === dropFilters.status)
-  if (dropFilters.priority) rows = rows.filter(t => t.priority === dropFilters.priority)
-  if (dropFilters.assignee) rows = rows.filter(t => t.assignee === dropFilters.assignee)
+  if (dropFilters.type.length)     rows = rows.filter(t => dropFilters.type.includes(t.type))
+  if (dropFilters.status.length)   rows = rows.filter(t => dropFilters.status.includes(t.status))
+  if (dropFilters.priority.length) rows = rows.filter(t => dropFilters.priority.includes(t.priority))
+  if (dropFilters.assignee.length) rows = rows.filter(t => dropFilters.assignee.includes(t.assignee))
   if (sorting.value.length) {
     rows = [...rows].sort((a, b) => {
       for (const { col, dir } of sorting.value) {
@@ -441,7 +452,25 @@ function toggleRow(key) {
 // ── Dropdowns ─────────────────────────────────────────────────────────────────
 function toggleDd(key) { openDd.value = openDd.value === key ? '' : key }
 function closeDd()     { openDd.value = '' }
-function setFilter(field, val) { dropFilters[field] = val; openDd.value = ''; savePrefs() }
+function toggleFilter(field, val) {
+  const arr = dropFilters[field]
+  const idx = arr.indexOf(val)
+  if (idx >= 0) arr.splice(idx, 1); else arr.push(val)
+  savePrefs()
+}
+function clearFilter(field) { dropFilters[field].splice(0); savePrefs() }
+function removeChip(field, val) {
+  const idx = dropFilters[field].indexOf(val)
+  if (idx >= 0) { dropFilters[field].splice(idx, 1); savePrefs() }
+}
+function toggleAllFilter(field, opts) {
+  if (dropFilters[field].length === opts.length) {
+    dropFilters[field].splice(0)
+  } else {
+    dropFilters[field].splice(0, Infinity, ...opts)
+  }
+  savePrefs()
+}
 
 function openUrl(url) {
   if (url) window.myscriptAPI?.openExternal(url)
@@ -694,9 +723,66 @@ thead th.sortable { cursor: pointer; }
 thead th.sortable:hover { color: var(--text); background: var(--bg4); }
 .th-exp { width: 28px; padding-left: 8px; }
 
-/* ── Filter dropdowns in toolbar ──────────────────────────────────────────── */
-.filter-dd { position: relative; }
-.filter-menu { min-width: 120px; }
+/* ── Chip-filter (Grafana-style multi-select) ─────────────────────────────── */
+.chip-filter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+  font-size: 12px;
+  line-height: 1;
+  min-height: 26px;
+  flex-shrink: 0;
+}
+.chip-filter.open { border-color: var(--accent); }
+
+.cf-label {
+  padding: 4px 6px 4px 8px;
+  color: var(--text2);
+  font-weight: 500;
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+.cf-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px 2px 2px 6px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cf-chip-rm, .cf-clear, .cf-toggle {
+  background: none; border: none; cursor: pointer;
+  color: var(--text3); font-size: 12px; padding: 2px 4px;
+  line-height: 1; transition: color 0.1s;
+}
+.cf-chip-rm:hover, .cf-clear:hover { color: var(--red, #e5534b); }
+.cf-toggle { padding: 2px 6px; font-size: 10px; color: var(--text3); }
+.cf-toggle:hover { color: var(--text); }
+.cf-clear { border-left: 1px solid var(--border); }
+
+.cf-dd {
+  position: absolute; top: calc(100% + 4px); left: 0;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  min-width: 150px; z-index: 200; padding: 3px 0;
+  max-height: 260px; overflow-y: auto;
+}
+.cf-dd-sep { height: 1px; background: var(--border); margin: 2px 0; }
+.cf-dd-item {
+  padding: 5px 10px; cursor: pointer; display: flex; align-items: center;
+  gap: 7px; font-size: 12px; color: var(--text2); transition: background 0.1s;
+  user-select: none; white-space: nowrap;
+}
+.cf-dd-item:hover { background: var(--bg4); color: var(--text); }
+.cf-dd-sel { font-weight: 500; }
+.cf-ck {
+  width: 15px; height: 15px; border: 1px solid var(--border2); border-radius: 3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; flex-shrink: 0; transition: background 0.1s;
+}
+.cf-ck.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .sort-ind { display: inline-flex; align-items: center; gap: 1px; margin-left: 4px; color: var(--accent); font-size: 11px; font-weight: 700; }
 .sort-ord { font-size: 9px; color: var(--accent2, #2d6fc4); }
