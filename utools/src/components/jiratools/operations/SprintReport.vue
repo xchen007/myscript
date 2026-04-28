@@ -308,13 +308,14 @@ function run() {
 
 /* Label chips + type-to-add ─────────────────────────────────────────────── */
 .sprint-labels-wrap {
-  max-width: 360px;
+  flex: 1;
   min-width: 120px;
   position: relative;
+  overflow: hidden;
 }
 .sprint-labels {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   min-height: 28px;
@@ -323,6 +324,7 @@ function run() {
   background: var(--bg);
   padding: 3px 6px;
   cursor: text;
+  overflow-x: auto;
 }
 .label-chip {
   display: inline-flex;

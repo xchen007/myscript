@@ -18,73 +18,6 @@
       <span class="meta-label">{{ data.meta?.label }} · {{ data.meta?.user }}</span>
     </div>
 
-    <!-- ── Toolbar ────────────────────────────────────────────────────── -->
-    <div class="toolbar" @click.stop>
-      <!-- Multi-select chip filters -->
-      <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
-        <span class="cf-label">{{ fd.label }}</span>
-        <span
-          v-for="val in dropFilters[fd.key]"
-          :key="val"
-          class="cf-chip"
-        >{{ val }}<button class="cf-chip-rm" @click.stop="removeChip(fd.key, val)">×</button></span>
-        <button v-if="dropFilters[fd.key].length" class="cf-clear" @click.stop="clearFilter(fd.key)">×</button>
-        <button class="cf-toggle" @click.stop="toggleDd(fd.key)">▾</button>
-
-        <!-- Dropdown -->
-        <div class="cf-dd" v-show="openDd === fd.key" @click.stop>
-          <div
-            class="cf-dd-item cf-dd-sel"
-            @click="toggleAllFilter(fd.key, fd.options())"
-          >
-            <span class="cf-ck" :class="{ on: dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 }">
-              {{ dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 ? '✓' : '' }}
-            </span>
-            {{ dropFilters[fd.key].length ? `Selected (${dropFilters[fd.key].length})` : 'All' }}
-          </div>
-          <div class="cf-dd-sep" />
-          <div
-            v-for="opt in fd.options()"
-            :key="opt"
-            class="cf-dd-item"
-            @click="toggleFilter(fd.key, opt)"
-          >
-            <span class="cf-ck" :class="{ on: dropFilters[fd.key].includes(opt) }">
-              {{ dropFilters[fd.key].includes(opt) ? '✓' : '' }}
-            </span>
-            {{ opt }}
-          </div>
-        </div>
-      </div>
-
-      <span class="sort-hint"><kbd>Shift</kbd>+Click 多列排序</span>
-      <div class="spacer" />
-
-      <!-- Column visibility -->
-      <div class="dropdown col-dd">
-        <button class="btn" :class="{ active: hiddenCount > 0 }" @click.stop="toggleDd('cols')">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h3v12H2V2zm4 0h3v12H6V2zm4 0h4v12h-4V2z"/></svg>
-          Columns{{ hiddenCount > 0 ? ` (${hiddenCount})` : '' }}
-        </button>
-        <div class="dd-menu col-menu" v-show="openDd === 'cols'" @click.stop>
-          <div class="col-actions">
-            <span @click="toggleAllCols(true)">全部显示</span>
-            <span @click="toggleAllCols(false)">全部隐藏</span>
-          </div>
-          <div class="col-divider" />
-          <label
-            v-for="col in orderedColumns"
-            :key="col.id"
-            class="col-item"
-            @click.stop="toggleCol(col.id)"
-          >
-            <span class="tog-box" :class="{ on: colVis[col.id] }">{{ colVis[col.id] ? '✓' : '' }}</span>
-            {{ col.title || col.label }}
-          </label>
-        </div>
-      </div>
-    </div>
-
     <!-- ── Table ──────────────────────────────────────────────────────── -->
     <div class="table-wrap">
       <div class="table-scroll">
@@ -229,13 +162,80 @@
       </div>
 
       <!-- Footer -->
-      <div class="table-footer">
+      <div class="table-footer" @click.stop>
+        <!-- Multi-select chip filters -->
+        <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
+          <span class="cf-label">{{ fd.label }}</span>
+          <span
+            v-for="val in dropFilters[fd.key]"
+            :key="val"
+            class="cf-chip"
+          >{{ val }}<button class="cf-chip-rm" @click.stop="removeChip(fd.key, val)">×</button></span>
+          <button v-if="dropFilters[fd.key].length" class="cf-clear" @click.stop="clearFilter(fd.key)">×</button>
+          <button class="cf-toggle" @click.stop="toggleDd(fd.key)">▾</button>
+
+          <!-- Dropdown (opens upward) -->
+          <div class="cf-dd cf-dd-up" v-show="openDd === fd.key" @click.stop>
+            <div
+              class="cf-dd-item cf-dd-sel"
+              @click="toggleAllFilter(fd.key, fd.options())"
+            >
+              <span class="cf-ck" :class="{ on: dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 }">
+                {{ dropFilters[fd.key].length === fd.options().length && fd.options().length > 0 ? '✓' : '' }}
+              </span>
+              {{ dropFilters[fd.key].length ? `Selected (${dropFilters[fd.key].length})` : 'All' }}
+            </div>
+            <div class="cf-dd-sep" />
+            <div
+              v-for="opt in fd.options()"
+              :key="opt"
+              class="cf-dd-item"
+              @click="toggleFilter(fd.key, opt)"
+            >
+              <span class="cf-ck" :class="{ on: dropFilters[fd.key].includes(opt) }">
+                {{ dropFilters[fd.key].includes(opt) ? '✓' : '' }}
+              </span>
+              {{ opt }}
+            </div>
+          </div>
+        </div>
+
+        <span class="sort-hint"><kbd>Shift</kbd>+Click 多列排序</span>
+
+        <!-- Sort pills -->
         <div class="sort-pills">
           <div v-for="s in sorting" :key="s.col" class="sort-pill">
             {{ colLabel(s.col) }} {{ s.dir === 'asc' ? '↑' : '↓' }}
             <span class="pill-x" @click.stop="removeSortCol(s.col)">✕</span>
           </div>
         </div>
+
+        <div class="spacer" />
+
+        <!-- Column visibility -->
+        <div class="dropdown col-dd">
+          <button class="btn" :class="{ active: hiddenCount > 0 }" @click.stop="toggleDd('cols')">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h3v12H2V2zm4 0h3v12H6V2zm4 0h4v12h-4V2z"/></svg>
+            Columns{{ hiddenCount > 0 ? ` (${hiddenCount})` : '' }}
+          </button>
+          <div class="dd-menu col-menu col-menu-up" v-show="openDd === 'cols'" @click.stop>
+            <div class="col-actions">
+              <span @click="toggleAllCols(true)">全部显示</span>
+              <span @click="toggleAllCols(false)">全部隐藏</span>
+            </div>
+            <div class="col-divider" />
+            <label
+              v-for="col in orderedColumns"
+              :key="col.id"
+              class="col-item"
+              @click.stop="toggleCol(col.id)"
+            >
+              <span class="tog-box" :class="{ on: colVis[col.id] }">{{ colVis[col.id] ? '✓' : '' }}</span>
+              {{ col.title || col.label }}
+            </label>
+          </div>
+        </div>
+
         <div class="row-count">
           {{ displayRows.length < (data.stats?.total_tickets ?? 0)
             ? `显示 ${displayRows.length} / ${data.stats.total_tickets} 条`
@@ -617,17 +617,7 @@ onMounted(loadPrefs)
 .sdot-done    { background: var(--green); }
 .sdot-blocked { background: var(--red); }
 
-/* ── Toolbar ──────────────────────────────────────────────────────────────── */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  background: var(--bg2);
-}
+
 
 .btn {
   background: var(--bg3);
@@ -664,6 +654,7 @@ onMounted(loadPrefs)
   max-height: 260px; overflow-y: auto;
 }
 .col-menu { left: auto; right: 0; min-width: 160px; }
+.col-menu-up { top: auto; bottom: calc(100% + 4px); }
 
 .dd-item {
   padding: 5px 11px; cursor: pointer; display: flex; align-items: center;
@@ -769,6 +760,7 @@ thead th.sortable:hover { color: var(--text); background: var(--bg4); }
   min-width: 150px; z-index: 200; padding: 3px 0;
   max-height: 260px; overflow-y: auto;
 }
+.cf-dd-up { top: auto; bottom: calc(100% + 4px); }
 .cf-dd-sep { height: 1px; background: var(--border); margin: 2px 0; }
 .cf-dd-item {
   padding: 5px 10px; cursor: pointer; display: flex; align-items: center;
@@ -1011,10 +1003,10 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 
 /* ── Footer ───────────────────────────────────────────────────────────────── */
 .table-footer {
-  padding: 6px 12px; border-top: 1px solid var(--border);
+  padding: 5px 8px; border-top: 1px solid var(--border);
   background: var(--bg3); font-size: 11px; color: var(--text3);
-  display: flex; align-items: center; justify-content: space-between;
-  flex-shrink: 0;
+  display: flex; align-items: center; gap: 5px;
+  flex-shrink: 0; flex-wrap: wrap;
 }
 .sort-pills { display: flex; gap: 4px; flex-wrap: wrap; }
 .sort-pill {
