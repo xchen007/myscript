@@ -7,6 +7,9 @@
   "pluginSetting": {
     "height": 700
   },
+  "development": {
+    "main": "http://127.0.0.1:5173/index.html"
+  },
   "features": [
     {
       "code": "myscript",
