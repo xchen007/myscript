@@ -6,6 +6,7 @@
         :key="tool.id"
         class="nav-btn"
         :class="{ active: activeTool === tool.id }"
+        :title="tool.label"
         @click="$emit('select', tool.id)"
       >
         <span class="nav-icon">
@@ -28,23 +29,19 @@
           </template>
           <template v-else>{{ tool.icon }}</template>
         </span>
-        <span class="nav-label">{{ tool.label }}</span>
       </button>
     </div>
 
     <button
       class="nav-btn settings-btn"
-      :class="{ active: activeTool === 'settings' }"
-      @click="$emit('select', 'settings')"
       title="Settings"
+      @click="$emit('openSettings')"
     >
       <span class="nav-icon">⚙️</span>
-      <span class="nav-label">Settings</span>
     </button>
 
-    <button class="nav-btn theme-btn" @click="cycleTheme" :title="`Theme: ${mode}`">
+    <button class="nav-btn theme-btn" :title="`Theme: ${mode}`" @click="cycleTheme">
       <span class="nav-icon">{{ themeIcon[mode] }}</span>
-      <span class="nav-label">{{ mode }}</span>
     </button>
   </nav>
 </template>
@@ -53,7 +50,7 @@
 import { useTheme } from '../composables/useTheme.js'
 
 defineProps({ activeTool: String })
-defineEmits(['select'])
+defineEmits(['select', 'openSettings'])
 
 const tools = [
   { id: 'bisync',    icon: '🔄', label: 'Bisync' },
@@ -66,13 +63,14 @@ const { mode, cycleTheme, themeIcon } = useTheme()
 
 <style scoped>
 .tool-nav {
-  width: 76px;
+  width: 40px;
   flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 8px 4px;
+  align-items: center;
+  padding: 8px 0;
   gap: 2px;
 }
 
@@ -80,30 +78,30 @@ const { mode, cycleTheme, themeIcon } = useTheme()
   flex: 1;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 2px;
+  width: 100%;
 }
 
 .nav-btn {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 7px 4px;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
   border: none;
   background: transparent;
   border-radius: var(--radius);
   cursor: pointer;
   color: var(--text2);
   transition: background 0.12s, color 0.12s;
-  width: 100%;
 }
 
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
 .nav-btn.active { background: var(--accent); color: #fff; }
 
-.nav-icon { font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.nav-icon { font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 .nav-icon .jira-icon { width: 1.4em; height: 1.4em; display: block; }
-.nav-label { font-size: 9px; font-weight: 500; }
 
 .settings-btn { margin-top: auto; opacity: 0.8; }
 .settings-btn:hover { opacity: 1; }

@@ -104,6 +104,7 @@ function stripAnsi(str) {
 const SETTING_KEYS = [
   'jira_bin', 'tess_bin', 'unison_bin', 'fswatch_bin',
   'jira_user', 'jira_label', 'jira_url',
+  'remember_last_tool',
 ]
 const SETTINGS_PREFIX = 'settings/'
 
@@ -314,6 +315,10 @@ window.myscriptAPI = {
     }, 10000)
     proc.on('close', (code) => finish({ ok: code === 0, code }))
     proc.on('error', (err) => finish({ ok: false, error: err.message }))
+  },
+
+  setExpendHeight(height) {
+    try { utools.setExpendHeight(height) } catch { /* not in utools env */ }
   },
 
   openExternal(url) {
