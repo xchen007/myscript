@@ -7,9 +7,32 @@
 
     <!-- Stats bar -->
     <div v-if="hasDailyData" class="dash-stats">
-      <div v-for="s in statCards" :key="s.label" class="stat-card" :class="{ accent: s.accent }">
-        <span class="sv">{{ s.value }}</span>
-        <span class="sl">{{ s.label }}</span>
+      <div class="stat-group">
+        <span class="stat-group-label">This week</span>
+        <div class="stat-group-cards">
+          <div class="stat-card">
+            <span class="sv">{{ thisWeek.total ? fmtH(thisWeek.total) : '—' }}</span>
+            <span class="sl">Total logged</span>
+          </div>
+          <div class="stat-card">
+            <span class="sv">{{ thisWeek.avg ? fmtH(thisWeek.avg) : '—' }}</span>
+            <span class="sl">Daily avg</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="hasLastWeekData" class="stat-sep" />
+      <div v-if="hasLastWeekData" class="stat-group stat-group-dim">
+        <span class="stat-group-label">Last week</span>
+        <div class="stat-group-cards">
+          <div class="stat-card">
+            <span class="sv">{{ fmtH(lastWeek.total) }}</span>
+            <span class="sl">Total logged</span>
+          </div>
+          <div class="stat-card">
+            <span class="sv">{{ fmtH(lastWeek.avg) }}</span>
+            <span class="sl">Daily avg</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -36,22 +59,50 @@ const props = defineProps({
 
 const hasDailyData = computed(() => props.dailyLog.length > 0)
 
-// Aggregated stats
-const totalSeconds = computed(() => props.dailyLog.reduce((s, d) => s + d.seconds, 0))
-const workDays = computed(() => new Set(props.dailyLog.map(d => d.date)).size)
-const avgSeconds = computed(() => workDays.value ? Math.round(totalSeconds.value / workDays.value) : 0)
-const daysAboveTarget = computed(() => {
+// ── Week boundary helpers ─────────────────────────────────────────────────
+function getWeekBounds(offsetWeeks = 0) {
+  const today = new Date()
+  const dow = today.getDay() // 0=Sun, 1=Mon … 6=Sat
+  const daysToMon = dow === 0 ? 6 : dow - 1
+  const mon = new Date(today)
+  mon.setDate(today.getDate() - daysToMon - offsetWeeks * 7)
+  mon.setHours(0, 0, 0, 0)
+  const fri = new Date(mon)
+  fri.setDate(mon.getDate() + 4)
+  fri.setHours(23, 59, 59, 999)
+  return { mon, fri }
+}
+
+function parseLocalDate(str) {
+  const [y, m, d] = str.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
+function calcWeekStats(dailyLog, mon, fri) {
   const dayTotals = {}
-  for (const e of props.dailyLog) dayTotals[e.date] = (dayTotals[e.date] || 0) + e.seconds
-  return Object.values(dayTotals).filter(s => s >= 8 * 3600).length
+  for (const e of dailyLog) {
+    const dt = parseLocalDate(e.date)
+    const dow = dt.getDay()
+    if (dow < 1 || dow > 5) continue       // skip weekends
+    if (dt < mon || dt > fri) continue     // skip outside window
+    dayTotals[e.date] = (dayTotals[e.date] || 0) + e.seconds
+  }
+  const days = Object.keys(dayTotals).length
+  const total = Object.values(dayTotals).reduce((s, v) => s + v, 0)
+  return { total, days, avg: days ? Math.round(total / days) : 0 }
+}
+
+const thisWeek = computed(() => {
+  const { mon, fri } = getWeekBounds(0)
+  return calcWeekStats(props.dailyLog, mon, fri)
 })
 
-const statCards = computed(() => [
-  { value: fmtH(totalSeconds.value), label: 'Total logged' },
-  { value: String(workDays.value), label: 'Work days' },
-  { value: fmtH(avgSeconds.value), label: 'Daily avg' },
-  { value: `${daysAboveTarget.value}/${workDays.value}`, label: 'Days ≥ 8h', accent: daysAboveTarget.value > 0 },
-])
+const lastWeek = computed(() => {
+  const { mon, fri } = getWeekBounds(1)
+  return calcWeekStats(props.dailyLog, mon, fri)
+})
+
+const hasLastWeekData = computed(() => lastWeek.value.total > 0)
 </script>
 
 <style scoped>
@@ -85,9 +136,34 @@ const statCards = computed(() => [
 /* Stats */
 .dash-stats {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
   padding: 0 12px;
+  flex-shrink: 0;
+}
+.stat-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-group-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.stat-group-dim .stat-group-label { color: var(--text3); }
+.stat-group-dim .sv { color: var(--text2); }
+.stat-group-cards {
+  display: flex;
+  gap: 6px;
+}
+.stat-sep {
+  width: 1px;
+  height: 36px;
+  background: var(--border);
   flex-shrink: 0;
 }
 .stat-card {
@@ -98,9 +174,8 @@ const statCards = computed(() => [
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 12px;
-  min-width: 80px;
+  min-width: 70px;
 }
-.stat-card.accent { border-color: var(--accent); }
 .sv { font-size: 14px; font-weight: 700; color: var(--fg); font-variant-numeric: tabular-nums; }
 .sl { font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: .05em; }
 

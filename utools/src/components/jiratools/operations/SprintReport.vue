@@ -362,7 +362,7 @@ function run() {
   position: absolute;
   top: calc(100% + 2px);
   left: 0;
-  right: 0;
+  min-width: 280px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -382,8 +382,6 @@ function run() {
 }
 .hist-text {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .hist-del {

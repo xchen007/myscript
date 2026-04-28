@@ -20,52 +20,33 @@
 
     <!-- ── Toolbar ────────────────────────────────────────────────────── -->
     <div class="toolbar" @click.stop>
-      <div class="search-wrap">
-        <span class="si">🔍</span>
-        <input
-          class="search-input"
-          v-model="globalFilter"
-          placeholder="Search…"
-          @input="savePrefs"
-        />
-        <button v-if="globalFilter" class="clear-btn" @click="globalFilter = ''; savePrefs()">×</button>
-      </div>
-
-      <div
-        v-for="fd in FILTER_DEFS"
-        :key="fd.key"
-        class="dropdown"
-      >
+      <!-- Filter dropdowns -->
+      <div v-for="fd in FILTER_DEFS" :key="fd.key" class="dropdown filter-dd">
         <button
           class="btn"
           :class="{ active: dropFilters[fd.key] }"
           @click.stop="toggleDd(fd.key)"
         >
-          {{ dropFilters[fd.key] || fd.label }} <span class="chev">▾</span>
+          {{ dropFilters[fd.key] || fd.label }}<span class="chev">▾</span>
         </button>
-        <div class="dd-menu" v-show="openDd === fd.key" @click.stop>
+        <div class="dd-menu filter-menu" v-show="openDd === fd.key" @click.stop>
           <div
             class="dd-item"
             :class="{ sel: !dropFilters[fd.key] }"
             @click="setFilter(fd.key, '')"
-          >
-            <span class="chk">{{ !dropFilters[fd.key] ? '✓' : '' }}</span> 全部
-          </div>
+          >All</div>
           <div
             v-for="opt in fd.options()"
             :key="opt"
             class="dd-item"
             :class="{ sel: dropFilters[fd.key] === opt }"
             @click="setFilter(fd.key, opt)"
-          >
-            <span class="chk">{{ dropFilters[fd.key] === opt ? '✓' : '' }}</span>
-            <span :class="fd.badgeCls(opt)" class="badge">{{ fd.badgeIcon(opt) }}{{ opt }}</span>
-          </div>
+          >{{ opt }}</div>
         </div>
       </div>
 
-      <div class="spacer" />
       <span class="sort-hint"><kbd>Shift</kbd>+Click 多列排序</span>
+      <div class="spacer" />
 
       <!-- Column visibility -->
       <div class="dropdown col-dd">
@@ -304,7 +285,6 @@ if (props.labelFilter !== undefined && props.labelFilter !== '') {
 }
 const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
-const globalFilter = ref('')
 const dropFilters  = reactive({ type: '', status: '', priority: '', assignee: '' })
 const openDd       = ref('')
 
@@ -319,7 +299,6 @@ function loadPrefs() {
   const saved = window.myscriptAPI?.getPref(PREF_KEY_REF.value) ?? {}
   if (Array.isArray(saved.sorting))     sorting.value = saved.sorting
   if (saved.colVis)                     Object.assign(colVis, saved.colVis)
-  if (saved.globalFilter != null)       globalFilter.value = saved.globalFilter
   if (saved.dropFilters)                Object.assign(dropFilters, saved.dropFilters)
   if (Array.isArray(saved.colOrder)) {
     // Merge: use saved order, append any new columns not in saved list
@@ -335,7 +314,6 @@ function savePrefs() {
     sorting:     sorting.value,
     colVis:      { ...colVis },
     colOrder:    colOrder.value,
-    globalFilter: globalFilter.value,
     dropFilters: { ...dropFilters },
   })
 }
@@ -369,6 +347,13 @@ const FILTER_DEFS = computed(() => [
   { key: 'assignee', label: 'Assignee', options: () => assigneeOptions.value, badgeCls: () => '',    badgeIcon: () => '' },
 ])
 
+function filterDefForCol(colId) {
+  return FILTER_DEFS.value.find(fd => fd.key === colId) ?? null
+}
+const hasVisibleFilters = computed(() =>
+  FILTER_DEFS.value.some(fd => colVis[fd.key])
+)
+
 // ── Derived rows (filtered + sorted) ─────────────────────────────────────────
 const displayRows = computed(() => {
   let rows = props.data.tickets ?? []
@@ -376,12 +361,6 @@ const displayRows = computed(() => {
   if (dropFilters.status)   rows = rows.filter(t => t.status === dropFilters.status)
   if (dropFilters.priority) rows = rows.filter(t => t.priority === dropFilters.priority)
   if (dropFilters.assignee) rows = rows.filter(t => t.assignee === dropFilters.assignee)
-  if (globalFilter.value) {
-    const q = globalFilter.value.toLowerCase()
-    rows = rows.filter(t =>
-      [t.key, t.summary, t.assignee, t.description].some(v => v?.toLowerCase().includes(q))
-    )
-  }
   if (sorting.value.length) {
     rows = [...rows].sort((a, b) => {
       for (const { col, dir } of sorting.value) {
@@ -630,32 +609,6 @@ onMounted(loadPrefs)
   background: var(--bg2);
 }
 
-.search-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.si { position: absolute; left: 8px; font-size: 11px; pointer-events: none; opacity: 0.5; }
-.search-input {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  padding: 4px 24px 4px 26px;
-  font-size: 12px;
-  width: 170px;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.search-input:focus { border-color: var(--accent); }
-.search-input::placeholder { color: var(--text3); }
-.clear-btn {
-  position: absolute; right: 6px;
-  background: none; border: none; color: var(--text3);
-  cursor: pointer; font-size: 14px; line-height: 1; padding: 0;
-}
-.clear-btn:hover { color: var(--text); }
-
 .btn {
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -749,6 +702,10 @@ thead th.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
 thead th.sortable { cursor: pointer; }
 thead th.sortable:hover { color: var(--text); background: var(--bg4); }
 .th-exp { width: 28px; padding-left: 8px; }
+
+/* ── Filter dropdowns in toolbar ──────────────────────────────────────────── */
+.filter-dd { position: relative; }
+.filter-menu { min-width: 120px; }
 
 .sort-ind { display: inline-flex; align-items: center; gap: 1px; margin-left: 4px; color: var(--accent); font-size: 11px; font-weight: 700; }
 .sort-ord { font-size: 9px; color: var(--accent2, #2d6fc4); }
