@@ -1,25 +1,25 @@
 <template>
   <div class="ticket-table" @click="closeDd">
-    <!-- ── Stats bar ───────────────────────────────────────────────────── -->
-    <div class="stats-bar" v-if="data.stats?.total_tickets > 0">
-      <span class="stat"><b>{{ data.stats.total_tickets }}</b> tickets</span>
-      <template v-for="[st, cnt] in sortedStatusCounts" :key="st">
-        <span class="sep">·</span>
-        <span class="stat"><span :class="statusDotCls(st)" class="sdot" /><b>{{ cnt }}</b> {{ st }}</span>
-      </template>
-      <template v-if="data.stats.total_points > 0">
-        <span class="sep">·</span>
-        <span class="stat"><b>{{ data.stats.total_points }}</b> pts</span>
-      </template>
-      <span class="sep">·</span>
-      <span class="stat"><b>{{ fmtSeconds(data.stats.total_log_seconds) }}</b> logged</span>
-      <span v-if="agoText" class="ago-hint">{{ agoText }}</span>
-      <span class="spacer" />
-      <span class="meta-label">{{ data.meta?.label }} · {{ data.meta?.user }}</span>
-    </div>
-
     <!-- ── Table ──────────────────────────────────────────────────────── -->
     <div class="table-wrap">
+      <!-- Stats bar inside table-wrap for clean boundary -->
+      <div class="stats-bar" v-if="data.stats?.total_tickets > 0">
+        <span class="stat"><b>{{ data.stats.total_tickets }}</b> tickets</span>
+        <template v-for="[st, cnt] in sortedStatusCounts" :key="st">
+          <span class="sep">·</span>
+          <span class="stat"><span :class="statusDotCls(st)" class="sdot" /><b>{{ cnt }}</b> {{ st }}</span>
+        </template>
+        <template v-if="data.stats.total_points > 0">
+          <span class="sep">·</span>
+          <span class="stat"><b>{{ data.stats.total_points }}</b> pts</span>
+        </template>
+        <span class="sep">·</span>
+        <span class="stat"><b>{{ fmtSeconds(data.stats.total_log_seconds) }}</b> logged</span>
+        <span v-if="agoText" class="ago-hint">{{ agoText }}</span>
+        <span class="spacer" />
+        <span class="meta-label">{{ data.meta?.label }} · {{ data.meta?.user }}</span>
+      </div>
+
       <div class="table-scroll">
         <table>
           <thead>
@@ -725,7 +725,6 @@ thead th {
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
   padding: 8px 10px; text-align: left; white-space: nowrap;
   border-bottom: 1px solid var(--border); user-select: none;
-  position: sticky; top: 0; z-index: 1;
   cursor: grab;
 }
 thead th:active { cursor: grabbing; }
