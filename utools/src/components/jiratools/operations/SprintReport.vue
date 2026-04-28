@@ -201,11 +201,31 @@ const {
   defaultIntervalSecs: 300,
 })
 
-const refreshIntervalMin = computed(() => Math.round(refreshIntervalSecs.value / 60))
-function toggleAutoRefresh() { setAutoRefresh(!autoRefresh.value) }
-function onIntervalChange(val) {
-  const mins = Math.max(1, Math.min(60, Number(val) || 5))
-  setAutoRefresh(true, mins * 60)
+const arDdOpen = ref(false)
+
+const AR_INTERVAL_OPTS = [
+  { label: 'Off',  secs: null },
+  { label: '30s',  secs: 30 },
+  { label: '1m',   secs: 60 },
+  { label: '2m',   secs: 120 },
+  { label: '5m',   secs: 300 },
+  { label: '10m',  secs: 600 },
+  { label: '15m',  secs: 900 },
+  { label: '30m',  secs: 1800 },
+]
+
+function formatInterval(secs) {
+  if (!secs) return 'Off'
+  return secs < 60 ? `${secs}s` : `${secs / 60}m`
+}
+
+const arIntervalLabel = computed(() =>
+  autoRefresh.value ? formatInterval(refreshIntervalSecs.value) : 'Off'
+)
+
+function setArInterval(secs) {
+  arDdOpen.value = false
+  setAutoRefresh(secs !== null, secs)
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
