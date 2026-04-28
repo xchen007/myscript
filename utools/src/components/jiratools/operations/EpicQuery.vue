@@ -74,6 +74,7 @@
         :appState="appState"
         :labelFilter="labelFilter"
         :agoText="agoText"
+        :isRefreshing="isRefreshing"
         prefKey="epic-table-prefs:v1"
       />
     </div>

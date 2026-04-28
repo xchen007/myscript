@@ -268,6 +268,7 @@ const props = defineProps({
   labelFilter: { type: String, default: '' },
   prefKey: { type: String, default: 'sprint-table-prefs:v2' },
   agoText: { type: String, default: '' },
+  isRefreshing: { type: Boolean, default: false },
 })
 
 const PREF_KEY_REF = computed(() => props.prefKey)
@@ -397,6 +398,7 @@ const hiddenCount = computed(() => COLUMNS.filter(c => !colVis[c.id]).length)
 
 const emptyMessage = computed(() => {
   if (props.appState === 'loading') return '⏳ 正在查询…'
+  if (props.isRefreshing)          return '⏳ 正在刷新…'
   if (props.appState === 'error')   return '❌ 查询出错，请查看日志'
   if (props.appState === 'no-data') return 'ℹ️ 未找到匹配的 Ticket'
   if (props.data.tickets?.length && displayRows.value.length === 0) return '没有匹配的 Ticket'
@@ -722,9 +724,10 @@ function onDocMouseDown(e) {
 .table-wrap {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border); border-radius: 6px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   overflow: hidden; background: var(--bg2);
-  margin: 0 10px 10px;
+  margin: 0;
 }
 .table-scroll { overflow-x: auto; }
 

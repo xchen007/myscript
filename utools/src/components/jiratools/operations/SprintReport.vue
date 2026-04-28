@@ -92,7 +92,7 @@
 
     <!-- Table area -->
     <div v-show="activeTab === 'tickets'" class="table-area">
-      <TicketTable :data="tableData ?? emptyData" :appState="appState" :agoText="agoText" />
+      <TicketTable :data="tableData ?? emptyData" :appState="appState" :agoText="agoText" :isRefreshing="isRefreshing" />
     </div>
 
     <!-- Logs area -->
@@ -454,7 +454,6 @@ function run() {
   align-items: center;
   gap: 2px;
   padding: 0 12px;
-  margin-top: 6px;
   background: var(--bg2);
   border-bottom: 2px solid var(--border);
   flex-shrink: 0;
@@ -478,6 +477,7 @@ function run() {
 .table-area {
   display: flex;
   flex-direction: column;
+  margin-top: 8px;
 }
 
 /* ── Logs tab ─────────────────────────────────────────────────────────────── */

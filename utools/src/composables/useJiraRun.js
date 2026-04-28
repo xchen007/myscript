@@ -89,7 +89,6 @@ export function useJiraRun({ tabPrefKey, onData } = {}) {
     lines.value    = []
     appState.value = 'loading'
     jobId.value    = crypto.randomUUID()
-    activeTab.value = 'logs'
 
     try {
       window.myscriptAPI.runTool(

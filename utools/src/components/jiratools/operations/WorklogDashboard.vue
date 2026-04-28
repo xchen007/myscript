@@ -110,7 +110,7 @@ const hasLastWeekData = computed(() => lastWeek.value.total > 0)
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 0 6px;
+  padding: 0 0 4px;
   background: var(--bg2);
   border-bottom: 2px solid var(--border);
   flex-shrink: 0;

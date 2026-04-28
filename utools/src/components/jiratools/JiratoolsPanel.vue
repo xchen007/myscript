@@ -14,7 +14,7 @@
       @mousedown.prevent="startResize"
     />
 
-    <div class="panel-right">
+    <div class="panel-right" :style="panelRightStyle">
       <SprintReport v-if="activeOp === 'sprint-report'" />
       <EpicQuery    v-if="activeOp === 'epic-query'" />
     </div>
@@ -22,7 +22,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import OperationList from './OperationList.vue'
 import SprintReport  from './operations/SprintReport.vue'
 import EpicQuery     from './operations/EpicQuery.vue'
@@ -33,6 +33,18 @@ const PREF_WIDTH     = 'jira-sidebar-width:v1'
 const PREF_COLLAPSED = 'jira-sidebar-collapsed:v1'
 const sidebarWidth     = ref(140)
 const sidebarCollapsed = ref(false)
+const isDragging       = ref(false)
+
+// Compute explicit panel-right width so it transitions in sync with the sidebar
+const HANDLE_W = 4
+const panelRightStyle = computed(() => {
+  const sw = sidebarCollapsed.value ? 40 : sidebarWidth.value
+  const hw = sidebarCollapsed.value ? 0 : HANDLE_W
+  return {
+    width: `calc(100% - ${sw + hw}px)`,
+    transition: isDragging.value ? 'none' : 'width 0.18s ease',
+  }
+})
 
 function loadPrefs() {
   const w = window.myscriptAPI?.getPref(PREF_WIDTH)
@@ -47,25 +59,23 @@ function toggleCollapse() {
 }
 
 // ── Drag resize ───────────────────────────────────────────────────────────
-let resizing = false
-let startX   = 0
-let startW   = 0
+let startX = 0
+let startW = 0
 
 function startResize(e) {
-  resizing = true
-  startX   = e.clientX
-  startW   = sidebarWidth.value
+  isDragging.value = true
+  startX = e.clientX
+  startW = sidebarWidth.value
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup',   onMouseUp)
 }
 
 function onMouseMove(e) {
-  if (!resizing) return
   sidebarWidth.value = Math.max(80, Math.min(280, startW + e.clientX - startX))
 }
 
 function onMouseUp() {
-  resizing = false
+  isDragging.value = false
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup',   onMouseUp)
   window.myscriptAPI?.setPref(PREF_WIDTH, sidebarWidth.value)
@@ -80,7 +90,7 @@ onUnmounted(() => {
 
 <style scoped>
 .panel { display: flex; flex: 1; overflow: hidden; }
-.panel-right { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
+.panel-right { flex: none; display: flex; flex-direction: column; overflow-y: auto; }
 
 .resize-handle {
   width: 4px;
