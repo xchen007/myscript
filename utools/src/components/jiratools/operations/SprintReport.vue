@@ -1,46 +1,47 @@
 <template>
   <div class="sprint-report">
-    <!-- Form (collapsible) -->
-    <div class="form-section" :class="{ collapsed: formCollapsed }">
-      <div class="form-header" @click="toggleForm">
-        <span class="form-toggle">{{ formCollapsed ? '▶' : '▼' }}</span>
-        <span class="form-title">📊 Sprint Report</span>
-        <template v-if="formCollapsed && (user || label)">
-          <span class="form-summary">{{ user || '—' }} · {{ label || '—' }}</span>
-        </template>
+    <!-- Always-visible header: title + inline inputs + run -->
+    <div class="sprint-header">
+      <span class="sprint-title">📊 Sprint Report</span>
+      <input
+        v-model="user"
+        class="sprint-input sprint-user"
+        placeholder="User"
+      />
+      <div class="sprint-labels-wrap">
+        <div class="sprint-labels">
+          <span v-for="lbl in labelArr" :key="lbl" class="label-chip">
+            <span class="chip-text">{{ lbl }}</span>
+            <button class="chip-rm" @click="removeLabel(lbl)" tabindex="-1">✕</button>
+          </span>
+          <input
+            v-model="newLabelInput"
+            class="label-add-input"
+            :placeholder="labelArr.length ? '+ label' : 'Sprint label, Enter to add'"
+            @keydown.enter.prevent="addLabelInput"
+            @focus="showLabelHistory = true"
+            @blur="hideLabelHistory"
+          />
+        </div>
+        <div v-if="showLabelHistory && filteredHistory.length" class="label-hist-drop">
+          <div
+            v-for="lbl in filteredHistory"
+            :key="lbl"
+            class="hist-item"
+            @mousedown.prevent="pickHistoryLabel(lbl)"
+          >{{ lbl }}</div>
+        </div>
       </div>
-      <form v-show="!formCollapsed" class="op-form" @submit.prevent="run">
-        <div v-if="!jiraBin" class="config-warn">
-          ⚠️ Jira CLI path not configured. Go to <a href="#" @click.prevent="$emit('openSettings')">⚙️ Settings</a> to set it.
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Jira user</label>
-            <InputWithHistory ref="userRef" v-model="user" storageKey="sprint-user" placeholder="xchen17" required />
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Sprint label(s)</label>
-          <LabelTransfer ref="labelTransferRef" v-model="labelArr" historyKey="sprint-label" />
-        </div>
-        <div class="form-footer">
-          <span class="config-hint">{{ configHint }}</span>
-        </div>
-      </form>
-      <div v-show="!formCollapsed" class="form-cta">
-        <button
-          type="button"
-          class="btn cta-run"
-          :disabled="appState === 'loading' || !jiraBin || !user || labelArr.length === 0"
-          @click="run"
-        >{{ appState === 'loading' ? '⏳ Running…' : '▶ Run' }}</button>
-        <button
-          v-if="appState === 'loading'"
-          type="button"
-          class="btn cta-stop"
-          @click="stop"
-        >■ Stop</button>
-      </div>
+      <button
+        class="btn sprint-run-btn"
+        :disabled="appState === 'loading' || !jiraBin || !user || labelArr.length === 0"
+        @click="run"
+      >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
+      <button v-if="appState === 'loading'" class="btn sprint-stop-btn" @click="stop">■</button>
+    </div>
+
+    <div v-if="!jiraBin" class="config-warn-bar">
+      ⚠️ Jira CLI not configured — go to ⚙️ Settings
     </div>
 
     <!-- Dashboard (always visible above tabs) -->
@@ -73,8 +74,6 @@ import { ref, computed, onMounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
 import WorklogDashboard from './WorklogDashboard.vue'
-import InputWithHistory from '../../shared/InputWithHistory.vue'
-import LabelTransfer from './LabelTransfer.vue'
 
 const jiraBin  = ref('')
 const user     = ref('')
@@ -82,8 +81,42 @@ const labelArr = ref([])
 const label    = computed(() => labelArr.value.join(','))
 const jobId    = ref(null)
 
-const userRef          = ref(null)
-const labelTransferRef = ref(null)
+// Label chip input state
+const newLabelInput   = ref('')
+const showLabelHistory = ref(false)
+const labelHistory    = ref([])
+const filteredHistory = computed(() =>
+  labelHistory.value.filter(l => !labelArr.value.includes(l) &&
+    (!newLabelInput.value || l.toLowerCase().includes(newLabelInput.value.toLowerCase())))
+)
+
+function addLabel(lbl) {
+  if (lbl && !labelArr.value.includes(lbl)) labelArr.value = [...labelArr.value, lbl]
+}
+function removeLabel(lbl) {
+  labelArr.value = labelArr.value.filter(l => l !== lbl)
+}
+function addLabelInput() {
+  const lbl = newLabelInput.value.trim()
+  if (!lbl) return
+  addLabel(lbl)
+  // Persist to history
+  const LABEL_HIST_KEY = 'input-history:sprint-label'
+  const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
+  hist.unshift(lbl)
+  const saved = hist.slice(0, 20)
+  window.myscriptAPI?.setPref(LABEL_HIST_KEY, saved)
+  labelHistory.value = saved
+  newLabelInput.value = ''
+}
+function pickHistoryLabel(lbl) {
+  addLabel(lbl)
+  showLabelHistory.value = false
+  newLabelInput.value = ''
+}
+function hideLabelHistory() {
+  setTimeout(() => { showLabelHistory.value = false }, 150)
+}
 
 // 'idle' | 'loading' | 'done' | 'no-data' | 'error'
 const appState    = ref('idle')
@@ -92,16 +125,12 @@ const dailyLog    = ref([])
 const weeklyLog   = ref([])
 const labels      = ref([])
 const lines       = ref([])
-const configHint  = ref('')
 const activeTab   = ref('tickets')
 
 const PREF_USER  = 'sprint-default-user:v1'
 const PREF_LABEL = 'sprint-default-label:v1'
 const TAB_KEY    = 'sprint-active-tab:v1'
-const FORM_COLLAPSED_KEY = 'sprint-form-collapsed:v1'
 const LOG_LIMIT = 500
-
-const formCollapsed = ref(true)
 
 const emptyData = { tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {} }
 
@@ -110,16 +139,10 @@ function setTab(tab) {
   window.myscriptAPI?.setPref(TAB_KEY, tab)
 }
 
-function toggleForm() {
-  formCollapsed.value = !formCollapsed.value
-  window.myscriptAPI?.setPref(FORM_COLLAPSED_KEY, formCollapsed.value)
-}
-
 onMounted(() => {
   jiraBin.value = window.myscriptAPI?.getSetting('jira_bin') ?? ''
 
-  // Saved defaults from last run take priority; fall back to Settings values
-  user.value  = window.myscriptAPI?.getPref(PREF_USER)
+  user.value = window.myscriptAPI?.getPref(PREF_USER)
              ?? window.myscriptAPI?.getSetting('jira_user')
              ?? ''
   const rawLabel = window.myscriptAPI?.getPref(PREF_LABEL)
@@ -129,18 +152,10 @@ onMounted(() => {
     ? rawLabel
     : rawLabel ? rawLabel.split(',').map(l => l.trim()).filter(Boolean) : []
 
-  const configured = jiraBin.value && user.value && label.value
-  configHint.value = configured
-    ? 'Config loaded from ⚙️ Settings'
-    : 'Configure Jira settings in ⚙️ Settings page'
+  labelHistory.value = window.myscriptAPI?.getPref('input-history:sprint-label') ?? []
 
-  // Restore active tab (coerce stale values like 'dashboard' to 'tickets')
   const savedTab = window.myscriptAPI?.getPref(TAB_KEY)
   if (savedTab === 'tickets' || savedTab === 'logs') activeTab.value = savedTab
-
-  // Restore form collapsed state (default: collapsed)
-  const savedCollapsed = window.myscriptAPI?.getPref(FORM_COLLAPSED_KEY)
-  formCollapsed.value = savedCollapsed !== false
 })
 
 function pushLog(line) {
@@ -154,9 +169,7 @@ function pushLog(line) {
 function run() {
   if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
 
-  userRef.value?.push(user.value)
-
-  // Persist as defaults for next session and update label history
+  // Persist defaults and label history
   window.myscriptAPI?.setPref(PREF_USER, user.value)
   window.myscriptAPI?.setPref(PREF_LABEL, labelArr.value)
   const LABEL_HIST_KEY = 'input-history:sprint-label'
@@ -165,7 +178,7 @@ function run() {
     hist.unshift(lbl)
     window.myscriptAPI?.setPref(LABEL_HIST_KEY, hist.slice(0, 20))
   }
-  labelTransferRef.value?.refreshHistory()
+  labelHistory.value = window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []
 
   if (!window.myscriptAPI?.isReady()) {
     lines.value = ['[error] Project root not found. Run: make install inside the myscript directory.']
@@ -245,102 +258,144 @@ function stop() {
   overflow: hidden;
 }
 
-/* ── Form ─────────────────────────────────────────────────────────────────── */
-.form-section {
-  flex-shrink: 0;
-  background: var(--bg2);
-  border-bottom: 2px solid var(--border);
-}
-
-.form-header {
+/* ── Inline header bar ───────────────────────────────────────────────────── */
+.sprint-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 6px 12px;
-  cursor: pointer;
-  user-select: none;
-}
-.form-header:hover { background: var(--bg3); }
-
-.form-toggle {
-  font-size: 9px;
-  color: var(--text2);
-  width: 12px;
-  text-align: center;
-}
-.form-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-}
-.form-summary {
-  font-size: 11px;
-  color: var(--text2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
+  background: var(--bg2);
+  border-bottom: 2px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
   min-width: 0;
 }
-.form-header-actions {
-  display: flex;
-  gap: 4px;
+
+.sprint-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+  white-space: nowrap;
   flex-shrink: 0;
-  margin-left: auto;
-}
-.btn-sm { padding: 3px 10px; font-size: 11px; }
-
-.op-form {
-  padding: 6px 12px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
-.form-group { display: flex; flex-direction: column; gap: 4px; }
-
-.form-row { display: flex; gap: 10px; }
-.form-row .form-group { flex: 1; }
-
-.config-warn {
-  font-size: 11px;
-  color: var(--yellow);
-  padding: 4px 8px;
-  background: color-mix(in srgb, var(--yellow) 10%, transparent);
-  border-radius: var(--radius);
+.sprint-input {
+  height: 28px;
+  font-size: 12px;
+  padding: 0 8px;
 }
-.config-warn a { color: var(--accent); text-decoration: underline; cursor: pointer; }
-
-.form-footer { display: flex; align-items: center; gap: 8px; }
-.config-hint { font-size: 10px; color: var(--text2); font-style: italic; flex: 1; }
-.form-actions { display: flex; gap: 6px; flex-shrink: 0; }
-
-.form-cta {
-  display: flex;
-  gap: 8px;
-  padding: 0 12px 10px;
+.sprint-user {
+  width: 110px;
+  flex-shrink: 0;
 }
-.cta-run {
+
+/* Label chips + type-to-add ─────────────────────────────────────────────── */
+.sprint-labels-wrap {
   flex: 1;
-  justify-content: center;
-  font-size: 13px;
+  min-width: 0;
+  position: relative;
+}
+.sprint-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 3px 6px;
+  cursor: text;
+}
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  border-radius: 10px;
+  padding: 1px 6px 1px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.chip-text { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.chip-rm {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.chip-rm:hover { opacity: 1; }
+.label-add-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 11px;
+  padding: 0 2px;
+  min-width: 80px;
+  flex: 1;
+  color: var(--fg);
+}
+.label-hist-drop {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  z-index: 100;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.hist-item {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
+
+/* Run / Stop ────────────────────────────────────────────────────────────── */
+.sprint-run-btn {
+  flex-shrink: 0;
+  padding: 5px 16px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 8px 0;
   background: var(--accent);
   color: #fff;
   border-radius: var(--radius);
+  white-space: nowrap;
 }
-.cta-run:hover:not(:disabled) { filter: brightness(1.12); }
-.cta-run:disabled { opacity: 0.45; cursor: not-allowed; }
-.cta-stop {
-  padding: 8px 16px;
+.sprint-run-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.sprint-run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sprint-stop-btn {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
   background: var(--red);
   color: #fff;
-  font-size: 13px;
-  font-weight: 600;
   border-radius: var(--radius);
 }
-.cta-stop:hover { filter: brightness(0.9); }
+.sprint-stop-btn:hover { filter: brightness(0.9); }
+
+.config-warn-bar {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--yellow);
+  padding: 4px 12px;
+  background: color-mix(in srgb, var(--yellow) 10%, transparent);
+}
 
 /* ── Tab bar ─────────────────────────────────────────────────────────────── */
 .tab-bar {
@@ -381,10 +436,6 @@ function stop() {
 .tab-running { color: var(--accent); animation: blink 1s infinite; margin-left: 2px; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
 
-.log-area {
-  padding: 0;
-}
-.log-area :deep(.log-viewer) {
-  height: 100%;
-}
+.log-area { padding: 0; }
+.log-area :deep(.log-viewer) { height: 100%; }
 </style>
