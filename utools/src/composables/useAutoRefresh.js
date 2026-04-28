@@ -98,6 +98,10 @@ export function useAutoRefresh({
     if (savedAR === true) autoRefresh.value = true
     const savedSecs = window.myscriptAPI?.getPref(prefKeyInterval)
     if (savedSecs) refreshIntervalSecs.value = Number(savedSecs) || defaultIntervalSecs
+    if (autoRefresh.value && canRun()) {
+      runBackground()
+      startRefreshTimer()
+    }
   }
 
   onUnmounted(stopRefreshTimer)
