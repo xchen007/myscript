@@ -24,10 +24,9 @@
         <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
           {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
         </span>
-        <span class="run-label">Run</span>
+        <span class="run-label">{{ isRefreshing ? 'Cancel' : 'Run' }}</span>
       </button>
       <span class="header-spacer" />
-      <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
       <!-- Interval dropdown (always visible) -->
       <div class="ar-group" @click.stop>
@@ -73,6 +72,7 @@
         :data="tableData ?? emptyData"
         :appState="appState"
         :labelFilter="labelFilter"
+        :agoText="agoText"
         prefKey="epic-table-prefs:v1"
       />
     </div>
@@ -290,14 +290,6 @@ function run() {
 .table-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .log-area { overflow-y: auto; }
 
-/* ── ago hint ────────────────────────────────────────────────────────────── */
-.ago-hint {
-  font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.55;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 .header-spacer { flex: 1; }
 
 /* ── Interval dropdown (right half of button group) ─────────────────────── */

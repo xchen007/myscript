@@ -45,9 +45,8 @@
         <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
           {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
         </span>
-        <span class="run-label">Run</span>
+        <span class="run-label">{{ isRefreshing ? 'Cancel' : 'Run' }}</span>
       </button>
-      <span v-if="lastUpdatedAt" class="ago-hint">{{ agoText }}</span>
 
       <!-- Interval dropdown (always visible) -->
       <div class="ar-group" @click.stop>
@@ -92,7 +91,7 @@
 
     <!-- Table area -->
     <div v-show="activeTab === 'tickets'" class="table-area">
-      <TicketTable :data="tableData ?? emptyData" :appState="appState" />
+      <TicketTable :data="tableData ?? emptyData" :appState="appState" :agoText="agoText" />
     </div>
 
     <!-- Logs area -->
@@ -486,13 +485,6 @@ function run() {
 .log-area :deep(.log-viewer) { height: 100%; }
 
 /* ── Auto-refresh controls ──────────────────────────────────────────────── */
-.ago-hint {
-  font-size: 11px;
-  color: var(--fg-dim, var(--fg));
-  opacity: 0.55;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 .ar-group {
   display: flex;
   align-items: center;

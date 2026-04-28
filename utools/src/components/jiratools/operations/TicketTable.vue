@@ -13,6 +13,7 @@
       </template>
       <span class="sep">·</span>
       <span class="stat"><b>{{ fmtSeconds(data.stats.total_log_seconds) }}</b> logged</span>
+      <span v-if="agoText" class="ago-hint">{{ agoText }}</span>
       <span class="spacer" />
       <span class="meta-label">{{ data.meta?.label }} · {{ data.meta?.user }}</span>
     </div>
@@ -269,6 +270,7 @@ const props = defineProps({
   appState: { type: String, default: 'idle' },
   labelFilter: { type: String, default: '' },
   prefKey: { type: String, default: 'sprint-table-prefs:v2' },
+  agoText: { type: String, default: '' },
 })
 
 const PREF_KEY_REF = computed(() => props.prefKey)
@@ -607,6 +609,7 @@ onMounted(loadPrefs)
 .sep { color: var(--border2); }
 .spacer { flex: 1; }
 .meta-label { font-size: 11px; color: var(--text3); }
+.ago-hint { font-size: 10.5px; color: var(--text3); margin-left: 4px; }
 
 .sdot { width: 6px; height: 6px; border-radius: 50%; background: var(--text3); display: inline-block; }
 .sdot-inprog  { background: var(--accent); }

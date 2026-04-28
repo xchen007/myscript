@@ -113,7 +113,7 @@ const statCards = computed(() => [
   min-height: 80px;
   padding: 0 12px;
   overflow: hidden;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .dash-charts > * { min-width: 0; }
 </style>
