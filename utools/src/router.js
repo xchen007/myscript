@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import BisyncPanel    from './components/bisync/BisyncPanel.vue'
 import JiratoolsPanel from './components/jiratools/JiratoolsPanel.vue'
 import Sync2podPanel  from './components/sync2pod/Sync2podPanel.vue'
@@ -11,6 +11,6 @@ const routes = [
 ]
 
 export default createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(),
   routes,
 })

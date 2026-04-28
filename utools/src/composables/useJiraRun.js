@@ -145,7 +145,7 @@ export function useJiraRun({ tabPrefKey, onData } = {}) {
     jiraBin, jobId, appState, tableData, lines, activeTab,
     lastUpdatedAt, agoText,
     pushLog, stampNow, setTab, restoreTab,
-    run, stop, initJiraBin, cleanupAgo,
+    run, stop, initJiraBin,
     EMPTY_DATA,
   }
 }

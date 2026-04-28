@@ -23,24 +23,27 @@ export function useAutoRefresh({
   const autoRefresh         = ref(false)
   const refreshIntervalSecs = ref(defaultIntervalSecs)
   const isRefreshing        = ref(false)
-  const nextRefreshIn       = ref(0)
+  const bgJobId             = ref(null)
   let refreshTimer   = null
-  let countdownTimer = null
 
   function runBackground() {
     if (!canRun()) return
     if (isRefreshing.value || appState.value === 'loading') return
     isRefreshing.value = true
-    const bgJobId = `bg-${crypto.randomUUID()}`
+    const jobId = `bg-${crypto.randomUUID()}`
+    bgJobId.value = jobId
 
     try {
       window.myscriptAPI.runTool(
-        bgJobId, 'jira-analyzer', buildArgs(),
+        jobId, 'jira-analyzer', buildArgs(),
         (line) => pushLog?.(`[auto] ${line}`),
         (code) => {
+          if (bgJobId.value === jobId) bgJobId.value = null
           if (code !== 0) isRefreshing.value = false
         },
         (line) => {
+          // Drop output if user cancelled this background run.
+          if (bgJobId.value !== jobId && !isRefreshing.value) return
           if (line.startsWith(SENTINEL)) {
             try {
               applyData(JSON.parse(line.slice(SENTINEL.length)))
@@ -56,27 +59,27 @@ export function useAutoRefresh({
     } catch (err) {
       pushLog?.(`[auto error] ${err.message}`)
       isRefreshing.value = false
+      bgJobId.value = null
     }
+  }
+
+  function stopBackground() {
+    if (bgJobId.value) {
+      try { window.myscriptAPI?.stopTool(bgJobId.value) } catch (_) {}
+      bgJobId.value = null
+    }
+    isRefreshing.value = false
   }
 
   function startRefreshTimer() {
     stopRefreshTimer()
     if (!autoRefresh.value) return
     const secs = refreshIntervalSecs.value
-    nextRefreshIn.value = secs
-    countdownTimer = setInterval(() => {
-      nextRefreshIn.value = Math.max(0, nextRefreshIn.value - 1)
-    }, 1000)
-    refreshTimer = setInterval(() => {
-      nextRefreshIn.value = secs
-      runBackground()
-    }, secs * 1000)
+    refreshTimer = setInterval(runBackground, secs * 1000)
   }
 
   function stopRefreshTimer() {
-    if (refreshTimer)   { clearInterval(refreshTimer);   refreshTimer = null }
-    if (countdownTimer) { clearInterval(countdownTimer);  countdownTimer = null }
-    nextRefreshIn.value = 0
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
   }
 
   function setAutoRefresh(enabled, intervalSecs) {
@@ -98,8 +101,10 @@ export function useAutoRefresh({
     if (savedAR === true) autoRefresh.value = true
     const savedSecs = window.myscriptAPI?.getPref(prefKeyInterval)
     if (savedSecs) refreshIntervalSecs.value = Number(savedSecs) || defaultIntervalSecs
-    if (autoRefresh.value && canRun()) {
-      runBackground()
+    if (autoRefresh.value) {
+      // Always start the timer so it kicks in once inputs become valid;
+      // runBackground() guards canRun() internally on each tick.
+      if (canRun()) runBackground()
       startRefreshTimer()
     }
   }
@@ -107,8 +112,8 @@ export function useAutoRefresh({
   onUnmounted(stopRefreshTimer)
 
   return {
-    autoRefresh, refreshIntervalSecs, isRefreshing, nextRefreshIn,
+    autoRefresh, refreshIntervalSecs, isRefreshing,
     startRefreshTimer, stopRefreshTimer, setAutoRefresh,
-    restoreAutoRefresh, runBackground,
+    restoreAutoRefresh, runBackground, stopBackground,
   }
 }

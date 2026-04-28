@@ -7,12 +7,14 @@
         v-model="epicKey"
         class="epic-input epic-key-input"
         placeholder="Epic Key (e.g. SDSTOR-21000)"
+        aria-label="Epic key"
         @keydown.enter="run"
       />
       <input
         v-model="labelFilter"
         class="epic-input epic-filter-input"
         placeholder="Label filter (e.g. SDS-CP-Sprint)"
+        aria-label="Label filter"
       />
       <!-- Merged Run / Refresh / Stop button -->
       <button
@@ -24,7 +26,7 @@
         <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
           {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
         </span>
-        <span class="run-label">{{ isRefreshing ? 'Cancel' : 'Run' }}</span>
+        <span class="run-label">{{ runLabel }}</span>
       </button>
       <span class="header-spacer" />
 
@@ -81,7 +83,7 @@
 
     <!-- Logs area -->
     <div v-show="activeTab === 'logs'" class="table-area log-area">
-      <LogViewer :lines="lines" :running="appState === 'loading'" />
+      <LogViewer :lines="lines" :running="appState === 'loading' || isRefreshing" />
     </div>
   </div>
 </template>
@@ -124,8 +126,8 @@ function buildArgs() {
 const arDdOpen = ref(false)
 
 const {
-  autoRefresh, refreshIntervalSecs, isRefreshing, nextRefreshIn,
-  startRefreshTimer, setAutoRefresh, restoreAutoRefresh,
+  autoRefresh, refreshIntervalSecs, isRefreshing,
+  startRefreshTimer, setAutoRefresh, restoreAutoRefresh, stopBackground,
 } = useAutoRefresh({
   appState,
   buildArgs,
@@ -170,13 +172,19 @@ function setArInterval(secs) {
 
 function handleRunClick() {
   if (isRefreshing.value) {
-    isRefreshing.value = false
+    stopBackground()
   } else if (appState.value === 'loading') {
     stop()
   } else {
     run()
   }
 }
+
+const runLabel = computed(() => {
+  if (appState.value === 'loading') return 'Stop'
+  if (isRefreshing.value) return 'Cancel'
+  return 'Run'
+})
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
@@ -190,6 +198,7 @@ onMounted(() => {
 function run() {
   const key = epicKey.value.trim()
   if (!jiraBin.value || !key) return
+  stopBackground()
   window.myscriptAPI?.setPref(PREF_EPIC, key)
   window.myscriptAPI?.setPref(PREF_FILTER, labelFilter.value)
   coreRun(buildArgs())
@@ -267,9 +276,12 @@ function run() {
 }
 
 .config-warn-bar {
-  background: #fef2f2; color: #b91c1c;
-  padding: 5px 12px; font-size: 11px;
-  border-bottom: 1px solid #fecaca; flex-shrink: 0;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--yellow);
+  padding: 4px 12px;
+  background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--yellow) 25%, transparent);
 }
 
 .tab-bar {

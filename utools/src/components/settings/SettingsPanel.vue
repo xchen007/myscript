@@ -174,11 +174,10 @@ onMounted(() => {
   }
   rememberLastTool.value = settings.remember_last_tool === 'true'
 
+  // Read saved height into the input field only (for display);
+  // do NOT call setExpendHeight — let uTools use its default size on each launch.
   const savedH = window.myscriptAPI?.getPref(WINDOW_HEIGHT_KEY)
-  if (savedH) {
-    windowHeight.value = savedH
-    window.myscriptAPI?.setExpendHeight(savedH)
-  }
+  if (savedH) windowHeight.value = savedH
 })
 
 for (const item of allBins) {

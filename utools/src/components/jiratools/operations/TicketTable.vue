@@ -66,7 +66,7 @@
                     <a class="ticket-key" href="#" @click.prevent.stop="openUrl(row.url)">{{ row.key }}</a>
                   </template>
                   <template v-else-if="col.id === 'project'">
-                    <span class="project-tag">{{ row.project ?? row.key.rsplit?.('-', 1)[0] ?? '—' }}</span>
+                    <span class="project-tag">{{ row.project ?? projectFromKey(row.key) }}</span>
                   </template>
                   <template v-else-if="col.id === 'summary'">
                     <span class="summary-text">{{ row.summary }}</span>
@@ -161,9 +161,8 @@
         </table>
       </div>
 
-      <!-- Footer — teleported to the window-bottom bar in JiratoolsPanel -->
-      <Teleport to="#panel-footer-target">
-        <div class="table-footer">
+      <!-- Footer (sticky at window bottom) -->
+      <div class="table-footer">
         <!-- Multi-select chip filters -->
         <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
           <span class="cf-label" @click.stop="toggleDd(fd.key)">{{ fd.label }}</span>
@@ -185,6 +184,7 @@
                 v-model="ddSearch[fd.key]"
                 class="cf-dd-search-input"
                 placeholder="Search…"
+                :aria-label="`Search ${fd.label}`"
                 @click.stop
               />
             </div>
@@ -255,8 +255,7 @@
             ? `显示 ${displayRows.length} / ${data.stats.total_tickets} 条`
             : `共 ${data.stats?.total_tickets ?? displayRows.length} 条` }}
         </div>
-        </div>
-      </Teleport>
+      </div>
     </div>
   </div>
 </template>
@@ -472,7 +471,12 @@ function toggleDd(key) {
   if (openDd.value === key) { openDd.value = ''; ddSearch[key] = '' }
   else { openDd.value = key; ddSearch[key] = '' }
 }
-function closeDd() { if (openDd.value && ddSearch[openDd.value] !== undefined) ddSearch[openDd.value] = ''; openDd.value = '' }
+function closeDd() {
+  if (openDd.value && ddSearch[openDd.value] !== undefined) {
+    ddSearch[openDd.value] = ''
+  }
+  openDd.value = ''
+}
 function filteredOpts(fd) {
   const all = fd.options()
   const q = (ddSearch[fd.key] || '').toLowerCase()
@@ -556,6 +560,12 @@ const CELL_CLASS = {
 }
 function cellClass(id) { return CELL_CLASS[id] || '' }
 
+function projectFromKey(key) {
+  if (!key || typeof key !== 'string') return '—'
+  const idx = key.lastIndexOf('-')
+  return idx > 0 ? key.slice(0, idx) : '—'
+}
+
 function fmtSeconds(s) {
   if (!s) return '—'
   const h = Math.floor(s / 3600)
@@ -620,6 +630,7 @@ function onDocMouseDown(e) {
 .ticket-table {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 0;
 }
 
@@ -725,6 +736,7 @@ function onDocMouseDown(e) {
 .table-wrap {
   display: flex;
   flex-direction: column;
+  flex: 1;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
@@ -1057,6 +1069,7 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 
 /* ── Footer ───────────────────────────────────────────────────────────────── */
 .table-footer {
+  position: sticky; bottom: 0; z-index: 5;
   padding: 5px 8px; border-top: 1px solid var(--border);
   background: var(--bg3); font-size: 11px; color: var(--text3);
   display: flex; align-items: center; gap: 5px;

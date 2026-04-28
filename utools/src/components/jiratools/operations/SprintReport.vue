@@ -7,6 +7,7 @@
         v-model="user"
         class="sprint-input sprint-user"
         placeholder="User"
+        aria-label="Jira user"
       />
       <div class="sprint-labels-wrap">
         <div class="sprint-labels">
@@ -18,6 +19,7 @@
             v-model="newLabelInput"
             class="label-add-input"
             :placeholder="labelArr.length ? '+ label' : 'Sprint label, Enter to add'"
+            aria-label="Add sprint label"
             @keydown.enter.prevent="addLabelInput"
             @focus="showLabelHistory = true"
             @blur="hideLabelHistory"
@@ -45,7 +47,7 @@
         <span class="run-icon" :class="{ spin: isRefreshing || appState === 'loading' }">
           {{ (isRefreshing || appState === 'loading') ? '↻' : '▶' }}
         </span>
-        <span class="run-label">{{ isRefreshing ? 'Cancel' : 'Run' }}</span>
+        <span class="run-label">{{ runLabel }}</span>
       </button>
 
       <!-- Interval dropdown (always visible) -->
@@ -97,7 +99,7 @@
 
     <!-- Logs area -->
     <div v-show="activeTab === 'logs'" class="table-area log-area">
-      <LogViewer :lines="lines" :running="appState === 'loading'" />
+      <LogViewer :lines="lines" :running="appState === 'loading' || isRefreshing" />
     </div>
   </div>
 </template>
@@ -143,6 +145,14 @@ const filteredHistory  = computed(() =>
     (!newLabelInput.value || l.toLowerCase().includes(newLabelInput.value.toLowerCase())))
 )
 
+function recordLabelHistory(lbl) {
+  const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
+  hist.unshift(lbl)
+  const saved = hist.slice(0, 20)
+  window.myscriptAPI?.setPref(LABEL_HIST_KEY, saved)
+  labelHistory.value = saved
+}
+
 function addLabel(lbl) {
   if (lbl && !labelArr.value.includes(lbl)) labelArr.value = [...labelArr.value, lbl]
 }
@@ -151,11 +161,7 @@ function addLabelInput() {
   const lbl = newLabelInput.value.trim()
   if (!lbl) return
   addLabel(lbl)
-  const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
-  hist.unshift(lbl)
-  const saved = hist.slice(0, 20)
-  window.myscriptAPI?.setPref(LABEL_HIST_KEY, saved)
-  labelHistory.value = saved
+  recordLabelHistory(lbl)
   newLabelInput.value = ''
 }
 function pickHistoryLabel(lbl) { addLabel(lbl); showLabelHistory.value = false; newLabelInput.value = '' }
@@ -179,8 +185,8 @@ function buildArgs() {
 
 // ── Auto-refresh ────────────────────────────────────────────────────────────
 const {
-  autoRefresh, refreshIntervalSecs, isRefreshing, nextRefreshIn,
-  startRefreshTimer, setAutoRefresh, restoreAutoRefresh,
+  autoRefresh, refreshIntervalSecs, isRefreshing,
+  startRefreshTimer, setAutoRefresh, restoreAutoRefresh, stopBackground,
 } = useAutoRefresh({
   appState,
   buildArgs,
@@ -252,7 +258,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onDocMouseDown))
 
 function handleRunClick() {
   if (isRefreshing.value) {
-    isRefreshing.value = false
+    stopBackground()
   } else if (appState.value === 'loading') {
     stop()
   } else {
@@ -260,16 +266,18 @@ function handleRunClick() {
   }
 }
 
+const runLabel = computed(() => {
+  if (appState.value === 'loading') return 'Stop'
+  if (isRefreshing.value) return 'Cancel'
+  return 'Run'
+})
+
 function run() {
   if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
+  stopBackground()
   window.myscriptAPI?.setPref(PREF_USER, user.value)
   window.myscriptAPI?.setPref(PREF_LABEL, labelArr.value)
-  for (const lbl of labelArr.value) {
-    const hist = (window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []).filter(x => x !== lbl)
-    hist.unshift(lbl)
-    window.myscriptAPI?.setPref(LABEL_HIST_KEY, hist.slice(0, 20))
-  }
-  labelHistory.value = window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []
+  for (const lbl of labelArr.value) recordLabelHistory(lbl)
   coreRun(buildArgs())
 }
 </script>
@@ -317,7 +325,7 @@ function run() {
   flex: 1;
   min-width: 120px;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 .sprint-labels {
   display: flex;
@@ -478,6 +486,7 @@ function run() {
 .table-area {
   display: flex;
   flex-direction: column;
+  flex: 1;
 }
 
 /* ── Logs tab ─────────────────────────────────────────────────────────────── */

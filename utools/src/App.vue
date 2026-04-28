@@ -87,6 +87,7 @@ function onUtoolsEnter(e) {
 onMounted(() => {
   isReady.value = window.myscriptAPI?.isReady() ?? false
   window.addEventListener('utoolsEnter', onUtoolsEnter)
+  window.myscriptAPI?.setExpendHeight(580)
 
   // Restore last tool on initial mount
   if (isRememberEnabled()) {
@@ -104,8 +105,8 @@ onUnmounted(() => {
 
 <style scoped>
 .app-shell {
-  width: 100vw;
-  height: 100vh;
+  position: fixed;
+  inset: 0;
   display: flex;
   overflow: hidden;
 }
