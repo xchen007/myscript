@@ -4,6 +4,9 @@
   "main": "dist/index.html",
   "logo": "logo.png",
   "preload": "preload.js",
+  "pluginSetting": {
+    "height": 700
+  },
   "features": [
     {
       "code": "myscript",

@@ -65,7 +65,7 @@ def _adf_to_text(node: Any) -> str:
 class JiraAnalyzer:
     def __init__(self, user: str, label: str | list[str], jira_bin: str,
                  jira_url: str = None, show_report: bool = False,
-                 show_json: bool = False):
+                 show_json: bool = False, epic: str = None):
         self.user = user
         # Accept a single string or a list of labels
         if isinstance(label, list):
@@ -75,8 +75,12 @@ class JiraAnalyzer:
         self.label = ','.join(self.labels)  # raw string for backward compat
         self.jira_bin = jira_bin
         self.jira_url = jira_url.rstrip('/') if jira_url else None
+        # Browse URL uses the web UI host (strip -cli suffix, e.g. jirap-cli → jirap)
+        import re as _re
+        self.browse_url = _re.sub(r'-cli(?=\.)', '', self.jira_url) if self.jira_url else None
         self.show_report = show_report
         self.show_json = show_json
+        self.epic = epic
         self.tickets = []
 
     def test_connection(self) -> bool:
@@ -154,6 +158,25 @@ class JiraAnalyzer:
 
         print(f"✓ Found {total} tickets across {len(self.labels)} label(s)", file=sys.stderr)
         return label_tickets
+
+    def fetch_epic_tickets(self) -> List[str]:
+        """Fetch all sub-ticket keys under an Epic using JQL."""
+        print(f"📋 Fetching tickets for Epic {self.epic}...", file=sys.stderr)
+        # Try "Epic Link" first (Jira Server/DC), fall back to "parentEpic" (Jira Cloud)
+        jql = f'"Epic Link" = {self.epic}'
+        cmd = f'{self.jira_bin} issue list --raw -q \'{jql}\''
+        output = self.run_command(cmd)
+        if output is None or output == '':
+            print(f"✓ Found 0 tickets", file=sys.stderr)
+            return []
+        try:
+            data = json.loads(output)
+            keys = [t['key'] for t in data]
+            print(f"✓ Found {len(keys)} tickets", file=sys.stderr)
+            return keys
+        except (json.JSONDecodeError, KeyError):
+            print(f"⚠️  Failed to parse epic ticket list", file=sys.stderr)
+            return []
 
     def fetch_ticket_details(self, ticket: str) -> Optional[Dict[str, Any]]:
         """Fetch detailed information for a ticket (including worklog)"""
@@ -259,6 +282,7 @@ class JiraAnalyzer:
                 'log_time': self.extract_worklog_time(details),
                 'done_label': self._extract_done_label(fields),
                 'worklog_entries': worklog_entries,
+                'labels': fields.get('labels', []),
             }
         except Exception as e:
             print(f"⚠️  Error processing ticket {ticket}: {e}", file=sys.stderr)
@@ -296,7 +320,28 @@ class JiraAnalyzer:
         self.tickets = []
         for r in results:
             if r is not None:
-                r['label'] = key_label_map.get(r['key'], self.labels[0])
+                r['label'] = key_label_map.get(r['key'], self.labels[0] if self.labels else '')
+                self.tickets.append(r)
+
+    def process_epic_tickets(self, keys: List[str]):
+        """Process ticket list from epic query (no label tagging)."""
+        print(f"🔍 Fetching details for {len(keys)} tickets...", file=sys.stderr)
+
+        def on_progress(completed: int, total: int, ticket: str):
+            if completed == 1 or completed == total:
+                print(f"  [{completed}/{total}] {ticket}", file=sys.stderr)
+
+        results = run_concurrent(
+            keys,
+            self._fetch_and_parse,
+            max_workers=5,
+            progress=on_progress,
+        )
+
+        self.tickets = []
+        for r in results:
+            if r is not None:
+                r['label'] = ''
                 self.tickets.append(r)
 
         print(f"✓ Processed {len(self.tickets)} tickets successfully", file=sys.stderr)
@@ -332,7 +377,7 @@ class JiraAnalyzer:
 
         tickets_data = []
         for t in sorted_tickets:
-            url = f"{self.jira_url}/browse/{t['key']}" if self.jira_url else None
+            url = f"{self.browse_url}/browse/{t['key']}" if self.browse_url else None
             project = t['key'].rsplit('-', 1)[0]
             tickets_data.append({
                 'key': t['key'],
@@ -351,6 +396,7 @@ class JiraAnalyzer:
                 'log_seconds': int((t.get('log_time', 0) or 0) * 3600),
                 'done_label': t.get('done_label', ''),
                 'url': url,
+                'labels': t.get('labels', []),
             })
 
         total_log_seconds = sum(t['log_seconds'] for t in tickets_data)
@@ -398,6 +444,7 @@ class JiraAnalyzer:
             'user': self.user,
             'label': self.label,
             'labels': self.labels,
+            'epic': self.epic,
             'generated_at': datetime.now().isoformat(),
             'schema_version': 2,
         }
@@ -447,8 +494,8 @@ class JiraAnalyzer:
 
         # Ticket column: clickable hyperlink if jira_url is configured
         formatters = {}
-        if self.jira_url:
-            formatters[0] = lambda key: make_hyperlink(key, f"{self.jira_url}/browse/{key}")
+        if self.browse_url:
+            formatters[0] = lambda key: make_hyperlink(key, f"{self.browse_url}/browse/{key}")
 
         print_table(headers, rows, col_overrides={7: max_title_width},
                     cell_formatters=formatters if formatters else None)
@@ -475,7 +522,7 @@ class JiraAnalyzer:
         print("\n## Sprint 报告")
         print("-" * 80)
 
-        base_url = self.jira_url or 'https://jira'
+        base_url = self.browse_url or 'https://jira'
         headers = ["Ticket URL", "状态", "Estimated", "Log Time", "标题", "完成"]
 
         max_url_width = max(
@@ -516,15 +563,23 @@ class JiraAnalyzer:
     def run(self):
         """Main execution"""
         try:
-            # Fetch and process tickets (multi-label)
-            label_tickets = self.fetch_ticket_lists()
-            all_empty = all(len(v) == 0 for v in label_tickets.values())
-            if all_empty:
-                if self.show_json:
-                    self.generate_json_output()  # emit empty JSON so GUI knows run completed
-                return
-
-            self.process_tickets(label_tickets)
+            if self.epic:
+                # Epic mode: fetch all sub-tickets under the epic
+                keys = self.fetch_epic_tickets()
+                if not keys:
+                    if self.show_json:
+                        self.generate_json_output()
+                    return
+                self.process_epic_tickets(keys)
+            else:
+                # Sprint mode: fetch by user + label
+                label_tickets = self.fetch_ticket_lists()
+                all_empty = all(len(v) == 0 for v in label_tickets.values())
+                if all_empty:
+                    if self.show_json:
+                        self.generate_json_output()
+                    return
+                self.process_tickets(label_tickets)
             
             # Generate and print report
             self.generate_report()
@@ -596,6 +651,10 @@ Examples:
         action='store_true',
         help='Test whether the jira CLI command is reachable and exit'
     )
+    parser.add_argument(
+        '--epic',
+        help='Epic ticket key (e.g. SDSTOR-21000). Fetches all sub-tickets under this epic.'
+    )
 
     args = parser.parse_args()
 
@@ -608,7 +667,21 @@ Examples:
         analyzer = JiraAnalyzer(user='_test_', label='_test_', jira_bin=args.jira_bin)
         sys.exit(0 if analyzer.test_connection() else 1)
 
-    # Validate required parameters for normal run
+    # Epic mode: only --epic and --jira-bin required
+    if args.epic:
+        analyzer = JiraAnalyzer(
+            user=args.user or '',
+            label=[],
+            jira_bin=args.jira_bin,
+            jira_url=args.jira_url,
+            show_report=args.report,
+            show_json=args.json,
+            epic=args.epic,
+        )
+        analyzer.run()
+        return
+
+    # Validate required parameters for sprint mode
     if not args.user or not args.labels:
         print("❌ Error: Both --user and --label are required", file=sys.stderr)
         parser.print_help(file=sys.stderr)

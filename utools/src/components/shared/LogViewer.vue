@@ -61,6 +61,7 @@ function lineClass(line) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
   background: #0d1117;
   border-top: 1px solid #21262d;
   font-family: var(--mono);
@@ -101,6 +102,7 @@ function lineClass(line) {
   flex: 1;
   overflow-y: auto;
   overflow-x: auto;
+  min-width: 0;
   padding: 8px 0;
   scrollbar-width: thin;
   scrollbar-color: #21262d transparent;
@@ -115,6 +117,7 @@ function lineClass(line) {
   align-items: baseline;
   padding-right: 14px;
   min-height: 1.6em;
+  min-width: max-content;
 }
 .term-line:hover { background: rgba(255,255,255,0.025); }
 

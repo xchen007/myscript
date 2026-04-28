@@ -160,6 +160,12 @@
                   <template v-else-if="col.id === 'estimated'">{{ fmtSeconds(row.estimated_seconds) }}</template>
                   <template v-else-if="col.id === 'logged'">{{ fmtSeconds(row.log_seconds) }}</template>
                   <template v-else-if="col.id === 'done_label'">{{ row.done_label || '—' }}</template>
+                  <template v-else-if="col.id === 'labels'">
+                    <span class="label-tags">
+                      <span v-for="lbl in filteredLabels(row.labels)" :key="lbl" class="label-tag">{{ lbl }}</span>
+                      <span v-if="!filteredLabels(row.labels).length">—</span>
+                    </span>
+                  </template>
                 </td>
               </tr>
 
@@ -167,44 +173,62 @@
               <tr v-if="expandedRows.has(row.key)" class="detail-tr">
                 <td :colspan="visibleColCount" style="padding:0">
                   <div class="detail-panel">
-                    <div class="detail-grid">
-                      <div class="di">
-                        <div class="dl">状态 / 优先级 / 类型</div>
-                        <div class="dv badge-row">
-                          <span :class="statusCls(row.status)" class="badge">{{ row.status }}</span>
-                          <span :class="priorityCls(row.priority)" class="badge">{{ priorityIcon(row.priority) }}{{ row.priority }}</span>
-                          <span :class="typeCls(row.type)" class="badge">{{ typeIcon(row.type) }}{{ row.type }}</span>
+                    <div class="detail-body">
+                      <div class="detail-grid">
+                        <div class="di">
+                          <div class="dl">状态 / 优先级 / 类型</div>
+                          <div class="dv badge-row">
+                            <span :class="statusCls(row.status)" class="badge">{{ row.status }}</span>
+                            <span :class="priorityCls(row.priority)" class="badge">{{ priorityIcon(row.priority) }}{{ row.priority }}</span>
+                            <span :class="typeCls(row.type)" class="badge">{{ typeIcon(row.type) }}{{ row.type }}</span>
+                          </div>
+                        </div>
+                        <div class="di">
+                          <div class="dl">负责人</div>
+                          <div class="dv">{{ row.assignee || '—' }}</div>
+                        </div>
+                        <div class="di">
+                          <div class="dl">Story Points</div>
+                          <div class="dv mono">{{ row.points ?? '— (未估算)' }}</div>
+                        </div>
+                        <div class="di full title-row">
+                          <a v-if="row.url" href="#" class="detail-key" @click.prevent.stop="openUrl(row.url)">{{ row.key }} ↗</a>
+                          <span v-else class="detail-key">{{ row.key }}</span>
+                          <span class="detail-summary">{{ row.summary }}</span>
+                        </div>
+                        <div class="di full">
+                          <div class="dl">Description</div>
+                          <!-- eslint-disable-next-line vue/no-v-html -->
+                          <div class="dv desc-text" v-html="formatDesc(row.description)" />
+                        </div>
+                        <div class="di full">
+                          <a
+                            v-if="row.url"
+                            class="open-jira-btn"
+                            href="#"
+                            @click.prevent.stop="openUrl(row.url)"
+                          >↗ 在 Jira 中打开</a>
                         </div>
                       </div>
-                      <div class="di">
-                        <div class="dl">负责人</div>
-                        <div class="dv">{{ row.assignee || '—' }}</div>
-                      </div>
-                      <div class="di">
-                        <div class="dl">工时</div>
-                        <div class="dv mono">预估 {{ fmtSeconds(row.estimated_seconds) }} · 已记录 {{ fmtSeconds(row.log_seconds) }}</div>
-                      </div>
-                      <div class="di">
-                        <div class="dl">Story Points</div>
-                        <div class="dv mono">{{ row.points ?? '— (未估算)' }}</div>
-                      </div>
-                      <div class="di full title-row">
-                        <a v-if="row.url" href="#" class="detail-key" @click.prevent.stop="openUrl(row.url)">{{ row.key }} ↗</a>
-                        <span v-else class="detail-key">{{ row.key }}</span>
-                        <span class="detail-summary">{{ row.summary }}</span>
-                      </div>
-                      <div class="di full">
-                        <div class="dl">Description</div>
-                        <!-- eslint-disable-next-line vue/no-v-html -->
-                        <div class="dv desc-text" v-html="formatDesc(row.description)" />
-                      </div>
-                      <div class="di full">
-                        <a
-                          v-if="row.url"
-                          class="open-jira-btn"
-                          href="#"
-                          @click.prevent.stop="openUrl(row.url)"
-                        >↗ 在 Jira 中打开</a>
+
+                      <!-- Time Tracking sidebar -->
+                      <div class="time-track">
+                        <div class="tt-heading">⏱ TIME TRACKING</div>
+                        <div class="tt-row">
+                          <div class="tt-label">Estimated</div>
+                          <div class="tt-bar"><div class="tt-fill tt-est" style="width:100%"></div></div>
+                          <div class="tt-val">{{ fmtSeconds(row.estimated_seconds) || '—' }}</div>
+                        </div>
+                        <div class="tt-row">
+                          <div class="tt-label">Remaining</div>
+                          <div class="tt-bar"><div class="tt-fill tt-rem" :style="{ width: remainPct(row) + '%' }"></div></div>
+                          <div class="tt-val">{{ fmtSeconds(Math.max(0, row.estimated_seconds - row.log_seconds)) || '—' }}</div>
+                        </div>
+                        <div class="tt-row">
+                          <div class="tt-label">Logged</div>
+                          <div class="tt-bar"><div class="tt-fill tt-log" :style="{ width: logPct(row) + '%' }"></div></div>
+                          <div class="tt-val">{{ fmtSeconds(row.log_seconds) || '—' }}</div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -243,9 +267,11 @@ import { ref, reactive, computed, onMounted } from 'vue'
 const props = defineProps({
   data: { type: Object, required: true },
   appState: { type: String, default: 'idle' },
+  labelFilter: { type: String, default: '' },
+  prefKey: { type: String, default: 'sprint-table-prefs:v2' },
 })
 
-const PREF_KEY = 'sprint-table-prefs:v2'
+const PREF_KEY_REF = computed(() => props.prefKey)
 
 // ── Column definitions ───────────────────────────────────────────────────────
 const COLUMNS = [
@@ -255,6 +281,7 @@ const COLUMNS = [
   { id: 'type',      label: 'Type',      sortKey: 'type_rank' },
   { id: 'status',    label: 'Status',    sortKey: 'status_rank' },
   { id: 'priority',  label: 'Priority',  sortKey: 'priority_rank' },
+  { id: 'labels',    label: 'Labels',    sortKey: null },
   { id: 'points',    label: 'Pts',       sortKey: 'points',             title: 'Story Points' },
   { id: 'assignee',  label: 'Assignee',  sortKey: 'assignee' },
   { id: 'estimated', label: 'Est.',      sortKey: 'estimated_seconds',  title: 'Estimated Time' },
@@ -263,10 +290,16 @@ const COLUMNS = [
 ]
 
 // ── State ────────────────────────────────────────────────────────────────────
+const DEFAULT_HIDDEN = new Set(['done_label', 'project', 'labels'])
 const sorting      = ref([])   // [{ col: sortKey, dir: 'asc'|'desc' }]
 const colVis = reactive(Object.fromEntries(
-  COLUMNS.map(c => [c.id, c.id !== 'done_label' && c.id !== 'project'])
+  COLUMNS.map(c => [c.id, !DEFAULT_HIDDEN.has(c.id)])
 ))
+
+// If labelFilter is provided, default labels column to visible
+if (props.labelFilter !== undefined && props.labelFilter !== '') {
+  colVis.labels = true
+}
 const colOrder     = ref(COLUMNS.map(c => c.id))
 const expandedRows = ref(new Set())
 const globalFilter = ref('')
@@ -281,7 +314,7 @@ const orderedColumns = computed(() =>
 
 // ── Persistence ──────────────────────────────────────────────────────────────
 function loadPrefs() {
-  const saved = window.myscriptAPI?.getPref(PREF_KEY) ?? {}
+  const saved = window.myscriptAPI?.getPref(PREF_KEY_REF.value) ?? {}
   if (Array.isArray(saved.sorting))     sorting.value = saved.sorting
   if (saved.colVis)                     Object.assign(colVis, saved.colVis)
   if (saved.globalFilter != null)       globalFilter.value = saved.globalFilter
@@ -296,7 +329,7 @@ function loadPrefs() {
 }
 
 function savePrefs() {
-  window.myscriptAPI?.setPref(PREF_KEY, {
+  window.myscriptAPI?.setPref(PREF_KEY_REF.value, {
     sorting:     sorting.value,
     colVis:      { ...colVis },
     colOrder:    colOrder.value,
@@ -434,6 +467,15 @@ function openUrl(url) {
   if (url) window.myscriptAPI?.openExternal(url)
 }
 
+function remainPct(row) {
+  if (!row.estimated_seconds) return 0
+  return Math.min(100, Math.max(0, (row.estimated_seconds - row.log_seconds) / row.estimated_seconds * 100))
+}
+function logPct(row) {
+  if (!row.estimated_seconds) return 0
+  return Math.min(100, row.log_seconds / row.estimated_seconds * 100)
+}
+
 // ── Column visibility ──────────────────────────────────────────────────────────
 function toggleCol(id) { colVis[id] = !colVis[id]; savePrefs() }
 function toggleAllCols(show) { COLUMNS.forEach(c => { colVis[c.id] = show }); savePrefs() }
@@ -475,7 +517,7 @@ function onDragEnd() {
 // ── Formatting ────────────────────────────────────────────────────────────────
 const CELL_CLASS = {
   key: 'td-key', project: 'td-project', summary: 'td-summary', points: 'td-num',
-  estimated: 'td-time', logged: 'td-time', done_label: 'td-done',
+  estimated: 'td-time', logged: 'td-time', done_label: 'td-done', labels: 'td-labels',
 }
 function cellClass(id) { return CELL_CLASS[id] || '' }
 
@@ -485,6 +527,13 @@ function fmtSeconds(s) {
   const m = Math.round((s % 3600) / 60)
   if (h === 0) return `${m}m`
   return m > 0 ? `${h}h ${m}m` : `${h}h`
+}
+
+function filteredLabels(labels) {
+  if (!Array.isArray(labels)) return []
+  const f = props.labelFilter?.toLowerCase()
+  if (!f) return labels
+  return labels.filter(l => l.toLowerCase().includes(f))
 }
 
 // ── Description formatter ─────────────────────────────────────────────────────
@@ -498,8 +547,12 @@ function formatDesc(text) {
   s = s.replace(/\{code(?::[^}]*)?\}([\s\S]*?)\{code\}/g,
     (_, body) => `<pre class="desc-code">${body.trim()}</pre>`)
   // {{inline code}} → <code>
-  s = s.replace(/\{\{([^}]*)\}\}/g, '<code class="desc-ic">$1</code>')
-  // remaining newlines → <br> (skip inside pre — already handled above)
+  s = s.replace(/\{\{([^}]+)\}\}/g, '<code class="desc-ic">$1</code>')
+  // *bold* → <strong>  (Jira wiki bold)
+  s = s.replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>')
+  // _italic_ → <em>   (Jira wiki italic)
+  s = s.replace(/(?<![a-zA-Z0-9])_([^_\n]+)_(?![a-zA-Z0-9])/g, '<em>$1</em>')
+  // remaining newlines → <br>
   s = s.replace(/\n/g, '<br>')
   return s
 }
@@ -749,6 +802,24 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 .pts-val { color: var(--accent); font-weight: 600; }
 .td-time { text-align: right; font-family: var(--mono); font-size: 11.5px; color: var(--text2); }
 .td-done { font-size: 11px; color: var(--text3); }
+.td-labels { max-width: 200px; }
+
+/* ── Label tags ──────────────────────────────────────────────────────────── */
+.label-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.label-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(79,158,255,.1);
+  color: var(--accent);
+  border: 1px solid rgba(79,158,255,.2);
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 .badge {
@@ -788,15 +859,67 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
   border-bottom: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
   animation: detailIn 0.15s ease;
 }
+.detail-body {
+  display: flex;
+  gap: 0;
+}
 @keyframes detailIn {
   from { opacity: 0; transform: translateY(-3px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .detail-grid {
+  flex: 1;
   padding: 12px 14px 14px 38px;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+/* ── Time Tracking sidebar ──────────────────────────────────────────────────── */
+.time-track {
+  width: 220px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tt-heading {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--text3);
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.tt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tt-label {
+  font-size: 10px;
+  color: var(--text2);
+}
+.tt-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.tt-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.tt-est { background: #4b9de8; }
+.tt-rem { background: #e8974b; }
+.tt-log { background: #4bba6e; }
+.tt-val {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text);
 }
 .di { display: flex; flex-direction: column; gap: 4px; }
 .di.full { grid-column: 1 / -1; }

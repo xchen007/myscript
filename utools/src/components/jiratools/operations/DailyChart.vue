@@ -234,17 +234,19 @@ function shortLabel(label) {
 </script>
 
 <style scoped>
-.dchart { display: flex; flex-direction: column; gap: 4px; }
-.dc-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; }
+.dchart { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: hidden; }
+.dc-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
 
 .dc-wrap {
   flex: 1;
-  width: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 2px 2px 0;
   box-sizing: border-box;
+  aspect-ratio: 400 / 200;
 }
 .dc-svg { display: block; width: 100%; height: 100%; }
 
@@ -257,6 +259,6 @@ function shortLabel(label) {
 .tt-date { font-size: 7px; fill: var(--text3); font-family: var(--mono, monospace); }
 .tt-val  { font-size: 9px; fill: var(--fg); font-weight: 700; font-family: var(--mono, monospace); }
 
-.dc-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: var(--text2); padding-left: 2px; }
+.dc-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: var(--text2); padding-left: 2px; flex-shrink: 0; }
 .leg-item { display: flex; align-items: center; gap: 4px; }
 </style>

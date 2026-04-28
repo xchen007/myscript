@@ -19,7 +19,7 @@ defineEmits(['select'])
 
 const operations = [
   { id: 'sprint-report', icon: '📊', name: 'Sprint Report' },
-  // Future operations added here
+  { id: 'epic-query',    icon: '🏷️', name: 'Epic Query' },
 ]
 </script>
 

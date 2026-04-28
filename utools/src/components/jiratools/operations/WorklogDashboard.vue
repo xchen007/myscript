@@ -69,8 +69,8 @@ function fmtH(seconds) {
   background: var(--bg2);
   border-bottom: 2px solid var(--border);
   flex-shrink: 0;
-  max-height: 340px;
-  overflow-y: auto;
+  max-height: min(42vh, 340px);
+  overflow: hidden;
 }
 
 /* Section header */
@@ -79,6 +79,7 @@ function fmtH(seconds) {
   align-items: center;
   padding: 5px 12px 4px;
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .dash-title {
   font-size: 10px;
@@ -93,6 +94,7 @@ function fmtH(seconds) {
   gap: 6px;
   flex-wrap: wrap;
   padding: 0 12px;
+  flex-shrink: 0;
 }
 .stat-card {
   display: flex;
@@ -113,8 +115,11 @@ function fmtH(seconds) {
   display: flex;
   flex-direction: row;
   gap: 10px;
-  height: 180px;
+  flex: 0 1 min(22vh, 180px);
+  min-height: 80px;
   padding: 0 12px;
+  overflow: hidden;
+  justify-content: center;
 }
-.dash-charts > * { flex: 1; min-width: 0; }
+.dash-charts > * { min-width: 0; }
 </style>

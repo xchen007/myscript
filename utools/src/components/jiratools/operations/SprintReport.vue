@@ -38,6 +38,29 @@
         @click="run"
       >{{ appState === 'loading' ? '⏳' : '▶ Run' }}</button>
       <button v-if="appState === 'loading'" class="btn sprint-stop-btn" @click="stop">■</button>
+
+      <!-- Auto-refresh controls -->
+      <div class="ar-group">
+        <button
+          class="btn ar-toggle"
+          :class="{ on: autoRefresh }"
+          :disabled="!jiraBin || !user || labelArr.length === 0"
+          title="Auto-refresh"
+          @click="toggleAutoRefresh"
+        >🔄</button>
+        <select v-if="autoRefresh" class="ar-select" :value="refreshIntervalMin" @change="onIntervalChange($event.target.value)">
+          <option v-for="m in [1,2,5,10,15,30]" :key="m" :value="m">{{ m }}m</option>
+        </select>
+        <span v-if="autoRefresh" class="ar-countdown" :title="isRefreshing ? 'Refreshing…' : `Next in ${nextRefreshIn}s`">
+          {{ isRefreshing ? '⏳' : `${nextRefreshIn}s` }}
+        </span>
+      </div>
+    </div>
+
+    <!-- Status bar: last updated -->
+    <div v-if="lastUpdated" class="status-bar">
+      <span class="last-updated">🕐 Last updated: {{ lastUpdated }}</span>
+      <span v-if="autoRefresh && isRefreshing" class="refreshing-hint">🔄 Refreshing…</span>
     </div>
 
     <div v-if="!jiraBin" class="config-warn-bar">
@@ -70,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
 import WorklogDashboard from './WorklogDashboard.vue'
@@ -126,11 +149,112 @@ const weeklyLog   = ref([])
 const labels      = ref([])
 const lines       = ref([])
 const activeTab   = ref('tickets')
+const lastUpdated = ref('')
 
-const PREF_USER  = 'sprint-default-user:v1'
-const PREF_LABEL = 'sprint-default-label:v1'
-const TAB_KEY    = 'sprint-active-tab:v1'
+const PREF_USER     = 'sprint-default-user:v1'
+const PREF_LABEL    = 'sprint-default-label:v1'
+const TAB_KEY       = 'sprint-active-tab:v1'
+const PREF_AR       = 'sprint-auto-refresh:v1'
+const PREF_AR_MIN   = 'sprint-auto-refresh-min:v1'
 const LOG_LIMIT = 500
+
+// ── Auto-refresh ────────────────────────────────────────────────────────────
+const autoRefresh      = ref(false)
+const refreshIntervalMin = ref(5)
+const isRefreshing     = ref(false)   // silent background refresh in progress
+let   refreshTimer     = null
+let   countdownTimer   = null
+const nextRefreshIn    = ref(0)       // seconds until next auto-refresh
+
+function buildArgs() {
+  const jiraUrl = window.myscriptAPI?.getSetting('jira_url') ?? ''
+  const args = ['--jira-bin', jiraBin.value, '--user', user.value, '--json']
+  for (const lbl of labelArr.value) args.push('--label', lbl)
+  if (jiraUrl) args.push('--jira-url', jiraUrl)
+  return args
+}
+
+function applyRefreshData(parsed) {
+  tableData.value  = parsed
+  dailyLog.value   = parsed.daily_log ?? []
+  weeklyLog.value  = parsed.weekly_log ?? []
+  labels.value     = parsed.meta?.labels ?? labelArr.value
+  lastUpdated.value = fmtNow()
+  if ((parsed.stats?.total_tickets ?? 0) > 0 && appState.value !== 'loading') {
+    appState.value = 'done'
+  }
+}
+
+// Silent background refresh — keeps old data until success
+function runBackground() {
+  if (!jiraBin.value || !user.value || labelArr.value.length === 0) return
+  if (isRefreshing.value || appState.value === 'loading') return
+  isRefreshing.value = true
+  const bgJobId = crypto.randomUUID()
+  try {
+    window.myscriptAPI.runTool(
+      bgJobId,
+      'jira-analyzer',
+      buildArgs(),
+      (line) => pushLog(`[auto] ${line}`),
+      (code) => { if (code !== 0) isRefreshing.value = false },
+      (line) => {
+        if (line.startsWith('__SPRINT_TABLE_JSON__:')) {
+          try {
+            applyRefreshData(JSON.parse(line.slice('__SPRINT_TABLE_JSON__:'.length)))
+          } catch (e) {
+            pushLog(`[auto error] ${e.message}`)
+          }
+          isRefreshing.value = false
+        } else {
+          pushLog(`[auto] ${line}`)
+        }
+      },
+    )
+  } catch (err) {
+    pushLog(`[auto error] ${err.message}`)
+    isRefreshing.value = false
+  }
+}
+
+function startRefreshTimer() {
+  stopRefreshTimer()
+  if (!autoRefresh.value) return
+  const ms = refreshIntervalMin.value * 60 * 1000
+  nextRefreshIn.value = refreshIntervalMin.value * 60
+  refreshTimer = setInterval(() => {
+    runBackground()
+    nextRefreshIn.value = refreshIntervalMin.value * 60
+  }, ms)
+  countdownTimer = setInterval(() => {
+    if (nextRefreshIn.value > 0) nextRefreshIn.value--
+  }, 1000)
+}
+
+function stopRefreshTimer() {
+  clearInterval(refreshTimer);  refreshTimer = null
+  clearInterval(countdownTimer); countdownTimer = null
+}
+
+function toggleAutoRefresh() {
+  autoRefresh.value = !autoRefresh.value
+  window.myscriptAPI?.setPref(PREF_AR, autoRefresh.value)
+  autoRefresh.value ? startRefreshTimer() : stopRefreshTimer()
+}
+
+function onIntervalChange(val) {
+  const v = Math.max(1, Math.min(60, Number(val) || 5))
+  refreshIntervalMin.value = v
+  window.myscriptAPI?.setPref(PREF_AR_MIN, v)
+  if (autoRefresh.value) startRefreshTimer()
+}
+
+onUnmounted(() => stopRefreshTimer())
+
+function fmtNow() {
+  const d = new Date()
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
 
 const emptyData = { tickets: [], stats: { total_tickets: 0, total_log_seconds: 0, total_points: 0, status_counts: {}, type_counts: {} }, meta: {} }
 
@@ -156,6 +280,12 @@ onMounted(() => {
 
   const savedTab = window.myscriptAPI?.getPref(TAB_KEY)
   if (savedTab === 'tickets' || savedTab === 'logs') activeTab.value = savedTab
+
+  // Restore auto-refresh prefs
+  const savedAR = window.myscriptAPI?.getPref(PREF_AR)
+  if (savedAR === true) autoRefresh.value = true
+  const savedARMin = window.myscriptAPI?.getPref(PREF_AR_MIN)
+  if (savedARMin) refreshIntervalMin.value = Number(savedARMin) || 5
 })
 
 function pushLog(line) {
@@ -199,11 +329,7 @@ function run() {
   jobId.value   = crypto.randomUUID()
   activeTab.value = 'logs'   // auto-jump to logs while running
 
-  const jiraUrl = window.myscriptAPI?.getSetting('jira_url') ?? ''
-  const labelList = labelArr.value
-  const args = ['--jira-bin', jiraBin.value, '--user', user.value, '--json']
-  for (const lbl of labelList) args.push('--label', lbl)
-  if (jiraUrl) args.push('--jira-url', jiraUrl)
+  const args = buildArgs()
 
   try {
     window.myscriptAPI.runTool(
@@ -228,7 +354,11 @@ function run() {
             weeklyLog.value = parsed.weekly_log ?? []
             labels.value    = parsed.meta?.labels ?? labelArr.value
             appState.value  = (parsed.stats?.total_tickets ?? 0) > 0 ? 'done' : 'no-data'
-            if (appState.value === 'done') activeTab.value = 'tickets'  // auto-jump to results
+            lastUpdated.value = fmtNow()
+            if (appState.value === 'done') {
+              activeTab.value = 'tickets'
+              if (autoRefresh.value) startRefreshTimer()
+            }
           } catch (e) {
             pushLog(`[error] Failed to parse table data: ${e.message}`)
             appState.value = 'error'
@@ -438,4 +568,61 @@ function stop() {
 
 .log-area { padding: 0; }
 .log-area :deep(.log-viewer) { height: 100%; }
+
+/* ── Auto-refresh controls ──────────────────────────────────────────────── */
+.ar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.ar-toggle {
+  font-size: 12px;
+  padding: 2px 6px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.ar-toggle.on {
+  opacity: 1;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+}
+.ar-select {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 4px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ar-countdown {
+  font-size: 11px;
+  color: var(--fg-dim, var(--fg));
+  opacity: 0.7;
+  min-width: 30px;
+}
+
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.last-updated {
+  font-size: 11px;
+  color: var(--fg-dim, var(--fg));
+  opacity: 0.7;
+}
+.refreshing-hint {
+  font-size: 11px;
+  color: var(--accent);
+  animation: blink 1s infinite;
+}
 </style>

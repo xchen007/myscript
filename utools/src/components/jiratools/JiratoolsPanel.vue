@@ -4,7 +4,7 @@
 
     <div class="panel-right">
       <SprintReport v-if="activeOp === 'sprint-report'" />
-      <!-- Future: <ModifyTicket v-if="activeOp === 'modify-ticket'" /> -->
+      <EpicQuery    v-if="activeOp === 'epic-query'" />
     </div>
   </div>
 </template>
@@ -13,6 +13,7 @@
 import { ref } from 'vue'
 import OperationList from './OperationList.vue'
 import SprintReport  from './operations/SprintReport.vue'
+import EpicQuery     from './operations/EpicQuery.vue'
 
 const activeOp = ref('sprint-report')
 </script>
