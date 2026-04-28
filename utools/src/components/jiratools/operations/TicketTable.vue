@@ -1,7 +1,11 @@
 <template>
   <div class="ticket-table" ref="rootEl" @click="closeDd">
     <!-- ── Table ──────────────────────────────────────────────────────── -->
-    <div class="table-wrap">
+    <div class="table-wrap" :class="{ 'is-refreshing': hasExistingData && (appState === 'loading' || isRefreshing) }">
+      <!-- Loading indicator bar when refreshing with existing data -->
+      <div v-if="hasExistingData && (appState === 'loading' || isRefreshing)" class="refresh-bar">
+        <span class="refresh-bar-text">⏳ {{ appState === 'loading' ? '正在查询…' : '正在刷新…' }}</span>
+      </div>
       <!-- Stats bar inside table-wrap for clean boundary -->
       <div class="stats-bar" v-if="data.stats?.total_tickets > 0">
         <span class="stat"><b>{{ data.stats.total_tickets }}</b> tickets</span>
@@ -397,7 +401,11 @@ const visibleColCount = computed(() =>
 )
 const hiddenCount = computed(() => COLUMNS.filter(c => !colVis[c.id]).length)
 
+const hasExistingData = computed(() => (props.data.tickets?.length ?? 0) > 0)
+
 const emptyMessage = computed(() => {
+  // When loading/refreshing and we already have data, keep showing data (no placeholder)
+  if (hasExistingData.value && (props.appState === 'loading' || props.isRefreshing)) return null
   if (props.appState === 'loading') return '⏳ 正在查询…'
   if (props.isRefreshing)          return '⏳ 正在刷新…'
   if (props.appState === 'error')   return '❌ 查询出错，请查看日志'
@@ -633,6 +641,25 @@ function onDocMouseDown(e) {
   flex: 1;
   gap: 0;
 }
+
+/* ── Refresh overlay bar ──────────────────────────────────────────────────── */
+.refresh-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 12px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text2);
+  animation: refresh-pulse 1.5s ease-in-out infinite;
+}
+.refresh-bar-text { opacity: 0.8; }
+@keyframes refresh-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.is-refreshing { opacity: 0.85; pointer-events: auto; }
 
 /* ── Stats bar ────────────────────────────────────────────────────────────── */
 .stats-bar {

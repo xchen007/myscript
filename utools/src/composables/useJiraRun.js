@@ -98,7 +98,13 @@ export function useJiraRun({ tabPrefKey, onData } = {}) {
         (line) => pushLog(line),
         (code) => {
           if (appState.value === 'loading') {
-            appState.value = code === 0 ? 'no-data' : 'error'
+            // If we already have data from a previous run, keep 'done' state
+            // so the table stays visible instead of showing an error/empty placeholder
+            if (tableData.value?.stats?.total_tickets > 0) {
+              appState.value = 'done'
+            } else {
+              appState.value = code === 0 ? 'no-data' : 'error'
+            }
           }
         },
         (line) => {
