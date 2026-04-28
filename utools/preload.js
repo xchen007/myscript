@@ -329,7 +329,6 @@ window.myscriptAPI = {
 // ── uTools lifecycle ──────────────────────────────────────────────────────────
 // Dispatch a custom event so app.js can react (tab switching, etc.)
 utools.onPluginEnter(({ code }) => {
-  utools.setExpendHeight(window.screen.availHeight)
   window.dispatchEvent(new CustomEvent('utoolsEnter', { detail: { code } }))
 })
 
