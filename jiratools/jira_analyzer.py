@@ -162,9 +162,10 @@ class JiraAnalyzer:
     def fetch_epic_tickets(self) -> List[str]:
         """Fetch all sub-ticket keys under an Epic using JQL."""
         print(f"📋 Fetching tickets for Epic {self.epic}...", file=sys.stderr)
-        # Try "Epic Link" first (Jira Server/DC), fall back to "parentEpic" (Jira Cloud)
-        jql = f'"Epic Link" = {self.epic}'
-        cmd = f'{self.jira_bin} issue list --raw -q \'{jql}\''
+        # Use escaped double quotes so the JQL survives the login-shell wrapper
+        # (run_local_cmd wraps in: zsh -l -c '...cmd...' — inner single quotes break)
+        jql = f'\\"Epic Link\\" = {self.epic}'
+        cmd = f'{self.jira_bin} issue list --raw -q "{jql}"'
         output = self.run_command(cmd)
         if output is None or output == '':
             print(f"✓ Found 0 tickets", file=sys.stderr)
