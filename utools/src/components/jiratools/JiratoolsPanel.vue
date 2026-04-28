@@ -1,23 +1,28 @@
 <template>
-  <div class="panel">
-    <OperationList
-      :activeId="activeOp"
-      :width="sidebarWidth"
-      :collapsed="sidebarCollapsed"
-      @select="activeOp = $event"
-      @toggle-collapse="toggleCollapse"
-    />
+  <div class="panel-wrapper">
+    <div class="panel">
+      <OperationList
+        :activeId="activeOp"
+        :width="sidebarWidth"
+        :collapsed="sidebarCollapsed"
+        @select="activeOp = $event"
+        @toggle-collapse="toggleCollapse"
+      />
 
-    <div
-      v-show="!sidebarCollapsed"
-      class="resize-handle"
-      @mousedown.prevent="startResize"
-    />
+      <div
+        v-show="!sidebarCollapsed"
+        class="resize-handle"
+        @mousedown.prevent="startResize"
+      />
 
-    <div class="panel-right" :style="panelRightStyle">
-      <SprintReport v-if="activeOp === 'sprint-report'" />
-      <EpicQuery    v-if="activeOp === 'epic-query'" />
+      <div class="panel-right" :style="panelRightStyle">
+        <SprintReport v-if="activeOp === 'sprint-report'" />
+        <EpicQuery    v-if="activeOp === 'epic-query'" />
+      </div>
     </div>
+
+    <!-- Global footer — TicketTable teleports its filter bar here -->
+    <div id="panel-footer-target" class="panel-footer-bar" />
   </div>
 </template>
 
@@ -89,8 +94,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.panel-wrapper { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
 .panel { display: flex; flex: 1; overflow: hidden; }
 .panel-right { flex: none; display: flex; flex-direction: column; overflow-y: auto; }
+.panel-footer-bar { flex-shrink: 0; }
 
 .resize-handle {
   width: 4px;

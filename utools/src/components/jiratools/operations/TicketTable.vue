@@ -161,8 +161,9 @@
         </table>
       </div>
 
-      <!-- Footer -->
-      <div class="table-footer">
+      <!-- Footer — teleported to the window-bottom bar in JiratoolsPanel -->
+      <Teleport to="#panel-footer-target">
+        <div class="table-footer">
         <!-- Multi-select chip filters -->
         <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
           <span class="cf-label" @click.stop="toggleDd(fd.key)">{{ fd.label }}</span>
@@ -254,7 +255,8 @@
             ? `显示 ${displayRows.length} / ${data.stats.total_tickets} 条`
             : `共 ${data.stats?.total_tickets ?? displayRows.length} 条` }}
         </div>
-      </div>
+        </div>
+      </Teleport>
     </div>
   </div>
 </template>
@@ -1055,7 +1057,6 @@ td { padding: 4px 10px; vertical-align: middle; color: var(--text); white-space:
 
 /* ── Footer ───────────────────────────────────────────────────────────────── */
 .table-footer {
-  position: sticky; bottom: 0; z-index: 5;
   padding: 5px 8px; border-top: 1px solid var(--border);
   background: var(--bg3); font-size: 11px; color: var(--text3);
   display: flex; align-items: center; gap: 5px;

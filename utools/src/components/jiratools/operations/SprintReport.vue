@@ -478,7 +478,6 @@ function run() {
 .table-area {
   display: flex;
   flex-direction: column;
-  margin-top: 8px;
 }
 
 /* ── Logs tab ─────────────────────────────────────────────────────────────── */
