@@ -1,5 +1,5 @@
 <template>
-  <div class="sprint-report" @click="arDdOpen = false">
+  <div class="sprint-report" ref="rootEl" @click="arDdOpen = false">
     <!-- Always-visible header: title + inline inputs + run -->
     <div class="sprint-header">
       <span class="sprint-title">📊 Sprint Report</span>
@@ -103,7 +103,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import LogViewer from '../../shared/LogViewer.vue'
 import TicketTable from './TicketTable.vue'
 import WorklogDashboard from './WorklogDashboard.vue'
@@ -229,6 +229,11 @@ function setArInterval(secs) {
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
+const rootEl = ref(null)
+function onDocMouseDown(e) {
+  if (arDdOpen.value && rootEl.value && !rootEl.value.contains(e.target)) arDdOpen.value = false
+}
+
 onMounted(() => {
   initJiraBin()
   user.value = window.myscriptAPI?.getPref(PREF_USER)
@@ -241,7 +246,9 @@ onMounted(() => {
   labelHistory.value = window.myscriptAPI?.getPref(LABEL_HIST_KEY) ?? []
   restoreTab()
   restoreAutoRefresh()
+  document.addEventListener('mousedown', onDocMouseDown)
 })
+onUnmounted(() => document.removeEventListener('mousedown', onDocMouseDown))
 
 function handleRunClick() {
   if (isRefreshing.value) {
@@ -447,6 +454,7 @@ function run() {
   align-items: center;
   gap: 2px;
   padding: 0 12px;
+  margin-top: 6px;
   background: var(--bg2);
   border-bottom: 2px solid var(--border);
   flex-shrink: 0;

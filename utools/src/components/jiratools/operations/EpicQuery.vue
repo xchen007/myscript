@@ -273,7 +273,7 @@ function run() {
 
 .tab-bar {
   display: flex; gap: 0; border-bottom: 2px solid var(--border);
-  padding: 0 12px; background: var(--bg2); flex-shrink: 0;
+  padding: 0 12px; margin-top: 6px; background: var(--bg2); flex-shrink: 0;
 }
 .tab-btn {
   padding: 6px 14px; font-size: 12px; font-weight: 600;

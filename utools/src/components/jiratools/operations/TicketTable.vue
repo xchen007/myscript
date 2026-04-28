@@ -1,5 +1,5 @@
 <template>
-  <div class="ticket-table" @click="closeDd">
+  <div class="ticket-table" ref="rootEl" @click="closeDd">
     <!-- ── Table ──────────────────────────────────────────────────────── -->
     <div class="table-wrap">
       <!-- Stats bar inside table-wrap for clean boundary -->
@@ -162,7 +162,7 @@
       </div>
 
       <!-- Footer -->
-      <div class="table-footer" @click.stop>
+      <div class="table-footer">
         <!-- Multi-select chip filters -->
         <div v-for="fd in FILTER_DEFS" :key="fd.key" class="chip-filter" :class="{ open: openDd === fd.key }">
           <span class="cf-label" @click.stop="toggleDd(fd.key)">{{ fd.label }}</span>
@@ -260,7 +260,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   data: { type: Object, required: true },
@@ -600,7 +600,16 @@ function typeIcon(t)     { return TYPE_ICONS[t] ?? '' }
 function statusIcon(s)   { return STATUS_ICONS[s] ?? '' }
 function priorityIcon(p) { return PRIORITY_ICONS[p] ?? '' }
 
-onMounted(loadPrefs)
+onMounted(() => {
+  loadPrefs()
+  document.addEventListener('mousedown', onDocMouseDown)
+})
+onUnmounted(() => document.removeEventListener('mousedown', onDocMouseDown))
+
+const rootEl = ref(null)
+function onDocMouseDown(e) {
+  if (openDd.value && rootEl.value && !rootEl.value.contains(e.target)) closeDd()
+}
 </script>
 
 <style scoped>
