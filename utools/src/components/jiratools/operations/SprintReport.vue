@@ -29,7 +29,10 @@
             :key="lbl"
             class="hist-item"
             @mousedown.prevent="pickHistoryLabel(lbl)"
-          >{{ lbl }}</div>
+          >
+            <span class="hist-text">{{ lbl }}</span>
+            <button class="hist-del" @mousedown.prevent.stop="deleteHistoryItem(lbl)" title="Delete">✕</button>
+          </div>
         </div>
       </div>
       <button
@@ -139,6 +142,12 @@ function pickHistoryLabel(lbl) {
 }
 function hideLabelHistory() {
   setTimeout(() => { showLabelHistory.value = false }, 150)
+}
+function deleteHistoryItem(lbl) {
+  const LABEL_HIST_KEY = 'input-history:sprint-label'
+  const updated = labelHistory.value.filter(x => x !== lbl)
+  window.myscriptAPI?.setPref(LABEL_HIST_KEY, updated)
+  labelHistory.value = updated
 }
 
 // 'idle' | 'loading' | 'done' | 'no-data' | 'error'
@@ -489,10 +498,30 @@ function stop() {
   font-size: 11.5px;
   cursor: pointer;
   color: var(--text);
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.hist-text {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.hist-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text3, #999);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity .12s, color .12s;
+}
+.hist-item:hover .hist-del { opacity: 1; }
+.hist-del:hover { color: var(--red, #e53e3e); background: rgba(229,62,62,.1); }
 .hist-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 
 /* Run / Stop ────────────────────────────────────────────────────────────── */
